@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from pdb_python_tools import Atom
-from pdb_python_tools import get_resi_from_cif
-from pdb_python_tools import get_resi_from_pdb
+from pdb_python_tools import load_residues
 from pdb_python_tools import Residue
 import argparse
 import math
@@ -26,16 +25,10 @@ hetatm = args.hetatm
 hydrogens = False
 
 # Check format and parse with appropriate function
-if ".pdb" in pdb2:
-    pdb2 = get_resi_from_pdb(pdb2, hetatm, hydrogens)
-elif ".cif" in pdb2:
-    pdb2 = get_resi_from_cif(pdb2, hetatm, hydrogens)
-# Check format of the other pdb, parse and split in equal chunks for the mpi processes
+pdb2 = load_residues(pdb2, hetatm, hydrogens)
+# Parse the other pdb and split in equal chunks for the mpi processes
 if rank == 0:
-    if ".pdb" in pdb1:
-        pdb1 = get_resi_from_pdb(pdb1, hetatm, hydrogens)
-    elif ".cif" in pdb1:
-        pdb1 = get_resi_from_cif(pdb1, hetatm, hydrogens)
+    pdb1 = load_residues(pdb1, hetatm, hydrogens)
     df_pdb1 = np.array_split(pdb1,size)
     
 else:

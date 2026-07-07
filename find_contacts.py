@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 from pdb_python_tools import Atom
 from pdb_python_tools import Residue
-from pdb_python_tools import get_resi_from_pdb
-from pdb_python_tools import get_resi_from_cif
+from pdb_python_tools import load_residues
 from pdb_python_tools import find_contacts_resi
 import argparse
 import numpy as np
@@ -13,8 +12,8 @@ parser = argparse.ArgumentParser(
                     description='Find possible contacts between chains for a given chain and within a given distance',
                     epilog='Usage: pdb1/cif1 -arguments')
 parser.add_argument('pdb', help='coordinate file (pdb/cif)')
-parser.add_argument('--chain', help='chain id to analyze', required=True)
-parser.add_argument('--distance', help='distance to check',type=float, required=True)
+parser.add_argument('-c','--chain', help='chain id to analyze', required=True)
+parser.add_argument('-d','--distance', help='distance to check',type=float, required=True)
 parser.add_argument('-HET','--HETATM', action='store_true', dest='hetatm', help='include hetatms')
 parser.add_argument('-hy','--hydrogens', action='store_true', dest='hydrogens', help='include hydrogens')
 parser.add_argument('-p','--polar_only', action='store_true', dest='polar', help='check only polar')
@@ -29,10 +28,7 @@ polar = args.polar
 all = args.all
 
 # Check format and parse with appropriate function
-if ".pdb" in pdb:
-    pdb = get_resi_from_pdb(pdb, hetatm, hydrogens)
-elif ".cif" or ".mmcif" in pdb:
-    pdb = get_resi_from_cif(pdb, hetatm, hydrogens)
+pdb = load_residues(pdb, hetatm, hydrogens)
 
 # Find the contacts within that distance
 atom_pairs = find_contacts_resi(pdb, distance, chain, polar)

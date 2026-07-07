@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 from pdb_python_tools import Atom
 from pdb_python_tools import Residue
-from pdb_python_tools import get_resi_from_cif
-from pdb_python_tools import get_resi_from_pdb
+from pdb_python_tools import load_residues
 from pdb_python_tools import compare_pdb_resi_xyz
 import argparse
 # Check for flags
@@ -20,14 +19,8 @@ pdb2 = args.pdb2
 hetatm = args.hetatm
 hydrogens = args.hydrogens
 #  Check format and parse with appropriate function
-if ".pdb" in pdb1:
-    pdb1 = get_resi_from_pdb(pdb1, hetatm, hydrogens)
-elif ".cif" or ".mmcif" in pdb1:
-    pdb1 = get_resi_from_cif(pdb1, hetatm, hydrogens)
-if ".pdb" in pdb2:
-    pdb2 = get_resi_from_pdb(pdb2, hetatm, hydrogens)
-elif ".cif" or ".mmcif" in pdb2:
-    pdb2 = get_resi_from_cif(pdb2, hetatm, hydrogens)
+pdb1 = load_residues(pdb1, hetatm, hydrogens)
+pdb2 = load_residues(pdb2, hetatm, hydrogens)
 
 # Compare both pdbs 
 compare_pdb_resi_xyz(pdb1,pdb2)
