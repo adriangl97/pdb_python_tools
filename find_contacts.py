@@ -3,7 +3,10 @@ from pdb_python_tools import Atom
 from pdb_python_tools import Residue
 from pdb_python_tools import load_residues
 from pdb_python_tools import find_contacts_kdtree
+from pdb_python_tools import add_output_args
+from pdb_python_tools import write_table
 import argparse
+import sys
 import numpy as np
 
 # Check for flags
@@ -18,6 +21,7 @@ parser.add_argument('-HET','--HETATM', action='store_true', dest='hetatm', help=
 parser.add_argument('-hy','--hydrogens', action='store_true', dest='hydrogens', help='include hydrogens')
 parser.add_argument('-p','--polar_only', action='store_true', dest='polar', help='check only polar')
 parser.add_argument('-a','--all', action='store_true', dest='all', help='all output: display all atoms involved and distances')
+add_output_args(parser)
 args = parser.parse_args()
 pdb = args.pdb
 chain = args.chain
@@ -42,11 +46,18 @@ if not show_all:
         key = (atom1.chainid, atom1.seqid, atom2.chainid, atom2.seqid)
         if key not in best or dist < best[key][2]:
             best[key] = [atom1, atom2, dist]
-    print("Residue1\tResidue1 number\tChain2\tResidue2\tResidue2 number\tDistance")
-    for atom1, atom2, dist in best.values():
-        print("%s\t%s\t%s\t%s\t%s\t%s" % (atom1.restyp, atom1.seqid, atom2.chainid, atom2.restyp, atom2.seqid, dist))
+    header = ["Residue1", "Residue1 number", "Chain2", "Residue2", "Residue2 number", "Distance"]
+    rows = [[atom1.restyp, atom1.seqid, atom2.chainid, atom2.restyp, atom2.seqid, dist]
+            for atom1, atom2, dist in best.values()]
 else:
-    # Print table
-    print("Chain1\tResidue1\tResidue1 number\tAtom1\tChain2\tResidue2\tResidue2 number\tAtom2\tDistance")
-    for atom1, atom2, dist in atom_pairs:
-        print("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (atom1.chainid, atom1.restyp, atom1.seqid, atom1.altid, atom2.chainid, atom2.restyp, atom2.seqid, atom2.altid, dist))
+    header = ["Chain1", "Residue1", "Residue1 number", "Atom1",
+              "Chain2", "Residue2", "Residue2 number", "Atom2", "Distance"]
+    rows = [[atom1.chainid, atom1.restyp, atom1.seqid, atom1.altid,
+             atom2.chainid, atom2.restyp, atom2.seqid, atom2.altid, dist]
+            for atom1, atom2, dist in atom_pairs]
+
+try:
+    write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
+                precision=args.precision, full_precision=args.full_precision)
+except FileExistsError as e:
+    sys.exit(str(e))

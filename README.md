@@ -45,6 +45,6 @@ To include hydrogens (ignored by default) add as an argument after the inputs:
 --hydrogens or -hy  
 
 # Test files  
-In test_files folder, you can try the test files. There are also outputs of what you would get with the command indicated in the .txt files.  
-This test is comparing two cryoEM ribosome structures frozen at different time-points. You can track the changes between both structures with the atom_tracker program (atom_tracker.py -HET 6ot3.cif 6ouo_aligned.cif).  
-The other test finds all the contacts of the mRNA (chain 4) with other chains with find_contacts (../find_contacts.py --chain 4 6ouo_aligned.cif --distance 4.5).  
+In test_files folder, you can try the test files. There are also outputs of what you would get with the command indicated in the .tsv files.  
+This test is comparing two cryoEM ribosome structures frozen at different time-points. You can track the changes between both structures with the atom_tracker program (atom_tracker.py -HET 6ot3.cif 6ouo_aligned.cif -o test_atom_tracker.tsv).  
+The other test finds all the contacts of the mRNA (chain 4) with other chains with find_contacts (../find_contacts.py --chain 4 6ouo_aligned.cif --distance 4.5 -o test_find_contacts.tsv).  

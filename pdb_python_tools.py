@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import math
+import csv
+import os
+import sys
 import numpy as np
 class Atom:
     """
@@ -449,3 +452,64 @@ def find_contacts_kdtree(residues, distance, chain, polar):
             atom2 = target_atoms[ti]
             atom_pairs.append([atom1, atom2, _euclid(atom1, atom2)])
     return atom_pairs
+
+
+def add_output_args(parser):
+    """
+    Add the shared output-formatting flags to an argparse parser so every
+    tool exposes the same output interface
+    """
+    parser.add_argument('-f', '--format', choices=('tsv', 'csv'), default='tsv',
+                        help='output format (default: tsv)')
+    parser.add_argument('-o', '--output', default=None,
+                        help='write to this file instead of stdout '
+                             '(refuses to overwrite unless --force is given)')
+    parser.add_argument('--force', action='store_true',
+                        help='allow overwriting an existing --output file')
+    parser.add_argument('--precision', type=int, default=2,
+                        help='decimal places for distance values (default: 2; '
+                             'use a negative value for raw floats)')
+    parser.add_argument('--full-precision', action='store_true', dest='full_precision',
+                        help='print raw float values without rounding')
+
+def _format_cell(value, precision, full_precision):
+    """Format a single table cell, rounding floats unless full precision is requested."""
+    if isinstance(value, float):
+        if full_precision or precision is None or precision < 0:
+            return str(value)
+        return format(value, f".{precision}f")
+    return str(value)
+
+def write_table(header, rows, fmt="tsv", output=None, force=False,
+                precision=3, full_precision=False):
+    """
+    Write a table (header + rows) as TSV or CSV to stdout or a file.
+
+    Float cells are rounded to `precision` decimals unless `full_precision` is
+    set. Writing to a path that already exists is refused unless `force` is True.
+
+    Inputs
+    ------
+    header : sequence of column names
+    rows : iterable of row sequences
+    fmt : "tsv" or "csv"
+    output : path to write to, or None for stdout
+    force : allow overwriting an existing output file
+    precision : decimal places for float cells (negative -> raw)
+    full_precision : if True, never round float cells
+    """
+    fmt = fmt.lower()
+    if fmt not in ("tsv", "csv"):
+        raise ValueError(f"Unsupported output format: {fmt}")
+    delimiter = "\t" if fmt == "tsv" else ","
+    if output is not None and os.path.exists(output) and not force:
+        raise FileExistsError(f"Refusing to overwrite existing file: {output} (use --force)")
+    handle = open(output, "w", newline="") if output is not None else sys.stdout
+    try:
+        writer = csv.writer(handle, delimiter=delimiter, lineterminator="\n")
+        writer.writerow(list(header))
+        for row in rows:
+            writer.writerow([_format_cell(v, precision, full_precision) for v in row])
+    finally:
+        if output is not None:
+            handle.close()
