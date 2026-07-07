@@ -398,89 +398,54 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
                         atom1.xyz_change = xyz
 
 
-def find_contacts(pdb, distance, chain, polar):
-    """
-    Finds all atoms from different chains within a specific distance and returns a list of pairs.
-    """
-    atom_pairs = []
-    # Iterate through atoms
-    for atom1 in pdb:
-        # Only consider atoms for a given chain
-        if atom1.chainid == chain:
-            if polar == True:
-                if atom1.element == "O" or atom1.element == "N" or atom1.element == "P" or atom1.element == "S":
-                    for atom2 in pdb:
-                        if atom1.chainid != atom2.chainid:
-                            if atom2.element == "O" or atom2.element == "N" or atom2.element == "P" or atom2.element == "S":
-                                #Get coordinates from each atom
-                                x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                #Calculate vector distance
-                                xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                xyz = math.sqrt(xyz)
-                                if xyz <= distance:
-                                    atom_pairs += [[atom1,atom2,xyz]]
-        # Compare with all other atoms. Slowest part - possibility for improvement
-            else:
-                for atom2 in pdb:
-                    # Consider only atoms from different chain for the comparison
-                    if atom1.chainid != atom2.chainid:
-                        # Get coordinates from each atom
-                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                        # Calculate vector distance
-                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                        xyz = math.sqrt(xyz)
-                        if xyz <= distance:
-                            # Ignore duplicate (the opposite pair, reversed)
-                            if [atom2,atom1,xyz] not in atom_pairs:
-                                atom_pairs += [[atom1,atom2,xyz]]
-    return(atom_pairs)
+_POLAR_ELEMENTS = {"N", "O", "P", "S"}
 
-def find_contacts_resi(pdb, distance, chain, polar):
+
+def find_contacts_kdtree(residues, distance, chain, polar):
     """
-    Finds all atoms from different chains within a specific distance and returns a list of pairs.
+    Find all inter-chain atom contacts within `distance` of a query chain.
+
+    Uses a scipy cKDTree. The query set is every atom in `chain`; the target
+    set is every atom in all other chains.
+    Hydrogens/HETATM are already filtered upstream by the parser flags
+    when `polar` is True both sets are restricted to N/O/P/S.
+
+    Inputs
+    ------
+    residues : list of Residue (class)
+    distance : float, contact cutoff in Angstrom
+    chain : chain id (str) to analyze
+    polar : boolean, restrict to polar (N/O/P/S) atoms only
+
+    Returns
+    -------
+    List of [atom1, atom2, distance] with atom1 in `chain` and atom2 in another chain.
     """
+    from scipy.spatial import cKDTree
+
+    # Split atoms into the query chain and everything else
+    query_atoms = []
+    target_atoms = []
+    for resi in residues:
+        is_query = resi.chainid == chain
+        for atom in resi.atom_list:
+            if polar and atom.element not in _POLAR_ELEMENTS:
+                continue
+            (query_atoms if is_query else target_atoms).append(atom)
+
+    if not query_atoms or not target_atoms:
+        return []
+
+    query_coords = np.array([(a.x, a.y, a.z) for a in query_atoms])
+    target_coords = np.array([(a.x, a.y, a.z) for a in target_atoms])
+    # Build the tree on the (usually larger) target set and query each atom
+    tree = cKDTree(target_coords)
+    neighbours = tree.query_ball_point(query_coords, r=distance)
+
     atom_pairs = []
-    # Iterate through atoms
-    for resi1 in pdb:
-        # Only consider atoms for a given chain
-        if resi1.chainid == chain:
-            if polar == True:
-                for resi2 in pdb:
-                    # Consider only atoms from different chain for the comparison
-                    if resi1.chainid != resi2.chainid:
-                        #iterate over residue
-                        for atom1 in resi1.atom_list:
-                            if atom1.element == "O" or atom1.element == "N" or atom1.element == "P" or atom1.element == "S":
-                                for atom2 in resi2.atom_list:
-                                    if atom2.element == "O" or atom2.element == "N" or atom2.element == "P" or atom2.element == "S":
-                                        # Get coordinates from each atom
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        # Calculate vector distance
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz <= distance:
-                                            # Ignore duplicate (the opposite pair, reversed)
-                                            if [atom2,atom1,xyz] not in atom_pairs:
-                                                atom_pairs += [[atom1,atom2,xyz]]
-        # Compare with all other atoms. Slowest part - possibility for improvement
-            else:
-                for resi2 in pdb:
-                    # Consider only atoms from different chain for the comparison
-                    if resi1.chainid != resi2.chainid:
-                        #iterate over residue
-                        for atom1 in resi1.atom_list:
-                            for atom2 in resi2.atom_list:
-                                # Get coordinates from each atom
-                                x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                # Calculate vector distance
-                                xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                xyz = math.sqrt(xyz)
-                                if xyz <= distance:
-                                    # Ignore duplicate (the opposite pair, reversed)
-                                    if [atom2,atom1,xyz] not in atom_pairs:
-                                        atom_pairs += [[atom1,atom2,xyz]]
-    return(atom_pairs)
+    for qi, hits in enumerate(neighbours):
+        atom1 = query_atoms[qi]
+        for ti in hits:
+            atom2 = target_atoms[ti]
+            atom_pairs.append([atom1, atom2, _euclid(atom1, atom2)])
+    return atom_pairs
