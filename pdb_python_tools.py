@@ -102,6 +102,16 @@ def _res_key(atom):
     return (atom.chainid, atom.seqid)
 
 
+def _euclid(a, b):
+    """Euclidean distance between two Atom objects."""
+    return math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
+
+
+def _has_ca(resi):
+    """True when the residue has a real CA/C1' atom"""
+    return resi.CA.altid == "CA" or resi.CA.altid == "C1'"
+
+
 def _add_atom(residues, atom, hydrogens):
     """
     Append an Atom to the growing list of Residues, starting a new Residue when
@@ -331,6 +341,20 @@ def find_max_res(pdb):
             resi_list_max += [residue[0]]
     return resi_list_max
 
+# Symmetric/interchangeable atom-name substrings per residue type. For these
+# residues the named atoms are (near-)equivalent, so the residue's displacement
+# for such an atom is taken as the minimum distance over the swappable partners.
+_SYMMETRIC = {
+    "TYR": ("CE", "CD"),
+    "PHE": ("CE", "CD"),
+    "GLU": ("OE1", "OE2"),
+    "ASP": ("OD1", "OD2"),
+    "ARG": ("NH1", "NH2"),
+    "LEU": ("D1", "D2"),
+    "VAL": ("CG1", "CG2"),
+}
+
+
 def compare_pdb_resi_xyz(pdb1, pdb2):
     """
     Compares two lists of Residues (class)
@@ -342,78 +366,36 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
     Returns
     -------
     Modifies self.xyz_change from pdb1 Atoms within the list in the Residue (class) based on the
-    x, y, z change between pdb1 and pdb2.
+    x, y, z change between pdb1 and pdb2. Also records the CA/C1' displacement on
+    each pdb1 residue's CA attribute when both structures have that atom.
 
     """
-    # Iterate through the first atom list
+    # Index pdb2 residues by (chainid, seqid)
+    # seqid already carries any insertion code
+    #  Keep the first residue seen for a given key to mirror the previous first-match behaviour.
+    index = {}
+    for resi2 in pdb2:
+        index.setdefault((resi2.chainid, resi2.seqid), resi2)
     for resi1 in pdb1:
-        for resi2 in pdb2:
-            if resi1.chainid == resi2.chainid and resi1.seqid == resi2.seqid:
-                for atom1 in resi1.atom_list:
-                    # Iterate through the second atom list
-                    for atom2 in resi2.atom_list:
-                        # Make sure it is the same atom being compared (same chain, seq number and atom name)
-                        if atom1.chainid == atom2.chainid:
-                            if atom1.seqid == atom2.seqid:
-                                if atom1.altid == atom2.altid and isinstance(atom1.xyz_change, int):
-                                    # Get coordinates from each atom
-                                    x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                    x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                    # Calculate vector distance
-                                    xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                    xyz = math.sqrt(xyz)
-                                    # Write distance to attribute on the first list
-                                    atom1.xyz_change = xyz
-                                if atom1.altid == "CA" or atom1.altid == "C1'":
-                                    resi1.CA.xyz_change = xyz
-                                if atom1.restyp == "TYR" or atom1.restyp == "PHE":
-                                    if "CE" in atom1.altid or "CD" in atom1.altid:
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                            atom1.xyz_change = xyz
-                                elif atom1.restyp == "GLU":
-                                    if "OE1" in atom1.altid or "OE2" in atom1.altid:
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                            atom1.xyz_change = xyz
-                                elif atom1.restyp == "ASP":
-                                    if "OD1" in atom1.altid or "OD2" in atom1.altid:
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                            atom1.xyz_change = xyz
-                                elif atom1.restyp == "ARG":
-                                    if "NH1" in atom1.altid or "NH2" in atom1.altid:
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                            atom1.xyz_change = xyz
-                                elif atom1.restyp == "LEU":
-                                    if "D1" in atom1.altid or "D2" in atom1.altid:
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                            atom1.xyz_change = xyz
-                                elif atom1.restyp == "VAL":
-                                    if "CG1" in atom1.altid or "CG2" in atom1.altid:
-                                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                        xyz = math.sqrt(xyz)
-                                        if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                            atom1.xyz_change = xyz
+        resi2 = index.get((resi1.chainid, resi1.seqid))
+        if resi2 is None:
+            continue
+        # CA/C1' displacement: computed explicitly and only when both residues
+        # have a real CA/C1' atom. Otherwise resi1.CA stays the dummy placeholder.
+        if _has_ca(resi1) and _has_ca(resi2):
+            resi1.CA.xyz_change = _euclid(resi1.CA, resi2.CA)
+        # Which (if any) atom names are interchangeable for this residue type
+        symmetric = _SYMMETRIC.get(resi1.restyp)
+        for atom1 in resi1.atom_list:
+            for atom2 in resi2.atom_list:
+                # Same atom by name: record its displacement once
+                if atom1.altid == atom2.altid and isinstance(atom1.xyz_change, int):
+                    atom1.xyz_change = _euclid(atom1, atom2)
+                # Interchangeable atoms: keep the minimum distance over the pair
+                if symmetric and (symmetric[0] in atom1.altid or symmetric[1] in atom1.altid):
+                    xyz = _euclid(atom1, atom2)
+                    if isinstance(atom1.xyz_change, int) or xyz < atom1.xyz_change:
+                        atom1.xyz_change = xyz
 
 
 def find_contacts(pdb, distance, chain, polar):
