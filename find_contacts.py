@@ -32,13 +32,11 @@ def main():
     add_output_args(parser)
     args = parser.parse_args()
 
-    # Parse with the appropriate parser
     pdb = load_residues(args.pdb, args.hetatm, args.hydrogens)
 
     # Find the inter-chain contacts within that distance (scipy cKDTree)
     atom_pairs = find_contacts_kdtree(pdb, args.distance, args.chain, args.polar)
 
-    # Check if all output is requested
     if not args.all:
         # Collapse to one contact per residue pair, keeping the shortest distance.
         # Key on the full residue identity of both partners (chain + seqid).
