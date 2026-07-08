@@ -454,6 +454,48 @@ def find_contacts_kdtree(residues, distance, chain, polar):
     return atom_pairs
 
 
+def find_nearest_ca(pdb1, pdb2):
+    """
+    For every residue in pdb1 that has a CA/C1' atom, find the nearest residue
+    in pdb2 whose CA/C1' atom is of the same type (CA->CA, C1'->C1') using a
+    scipy cKDTree nearest-neighbour query.
+
+    The two structures do not need to be equivalent or share residue numbering, but
+    they should be pre-aligned.
+
+    Inputs
+    ------
+    pdb1, pdb2 : list of Residue (class)
+
+    Returns
+    -------
+    List of (resi1, resi2, distance) in pdb1 order. Also stores the
+    nearest-neighbour distance on resi1.CA.xyz_change.
+    """
+    from scipy.spatial import cKDTree
+
+    # Build one tree per CA/C1' type from the pdb2 residues that have that atom
+    trees = {}
+    targets_by_name = {}
+    for name in ("CA", "C1'"):
+        targets = [resi for resi in pdb2 if resi.CA.altid == name]
+        if targets:
+            coords = np.array([(r.CA.x, r.CA.y, r.CA.z) for r in targets])
+            trees[name] = cKDTree(coords)
+            targets_by_name[name] = targets
+
+    results = []
+    for resi1 in pdb1:
+        name = resi1.CA.altid
+        if name not in trees:
+            continue
+        dist, idx = trees[name].query((resi1.CA.x, resi1.CA.y, resi1.CA.z), k=1)
+        resi2 = targets_by_name[name][idx]
+        resi1.CA.xyz_change = float(dist)
+        results.append((resi1, resi2, float(dist)))
+    return results
+
+
 def add_output_args(parser):
     """
     Add the shared output-formatting flags to an argparse parser so every
