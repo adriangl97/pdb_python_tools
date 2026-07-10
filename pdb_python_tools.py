@@ -496,6 +496,72 @@ def find_nearest_ca(pdb1, pdb2):
     return results
 
 
+# Standard RNA residue names, split into purines and pyrimidines. The
+# glycosidic torsion chi is defined from a different base atom for each group.
+_RNA_PURINES = {"A", "G"}
+_RNA_PYRIMIDINES = {"C", "U"}
+_RNA_RESIDUES = _RNA_PURINES | _RNA_PYRIMIDINES
+
+
+def _dihedral(p0, p1, p2, p3):
+    """
+    Dihedral angle in degrees (range (-180, 180]) defined by four points.
+
+    Each point is an (x, y, z) sequence. Uses the standard projection formulation
+    """
+    b0 = np.array(p0, dtype=float) - np.array(p1, dtype=float)
+    b1 = np.array(p2, dtype=float) - np.array(p1, dtype=float)
+    b2 = np.array(p3, dtype=float) - np.array(p2, dtype=float)
+    # Normalise the central bond so it does not scale the projections
+    b1 /= np.linalg.norm(b1)
+    v = b0 - np.dot(b0, b1) * b1
+    w = b2 - np.dot(b2, b1) * b1
+    x = np.dot(v, w)
+    y = np.dot(np.cross(b1, v), w)
+    return math.degrees(math.atan2(y, x))
+
+
+def classify_rna_conformation(residues):
+    """
+    Compute the glycosidic torsion angle chi for every standard RNA nucleotide
+    and classify it as syn or anti.
+
+    chi is measured O4'-C1'-N1-C2 for pyrimidines (C, U) and O4'-C1'-N9-C4 for
+    purines (A, G). A nucleotide is 'syn' when chi lies in [-90, +90] degrees
+    and 'anti' otherwise.
+
+    Inputs
+    ------
+    residues : list of Residue (class)
+
+    Returns
+    -------
+    List of (residue, chi, conformation) for every RNA residue that has all four
+    chi atoms. Non-RNA residues, or residues missing a chi atom, are skipped.
+    """
+    results = []
+    for resi in residues:
+        if resi.restyp not in _RNA_RESIDUES:
+            continue
+        # Chi atom names, base atom (3rd/4th) depends on purine vs pyrimidine
+        if resi.restyp in _RNA_PURINES:
+            names = ("O4'", "C1'", "N9", "C4")
+        else:
+            names = ("O4'", "C1'", "N1", "C2")
+        # Collect the first occurrence of each chi atom (ignores altlocs)
+        coords = {}
+        for atom in resi.atom_list:
+            if atom.altid in names and atom.altid not in coords:
+                coords[atom.altid] = (atom.x, atom.y, atom.z)
+        # Skip residues that are missing any of the four atoms
+        if len(coords) != 4:
+            continue
+        chi = _dihedral(coords[names[0]], coords[names[1]], coords[names[2]], coords[names[3]])
+        conformation = "syn" if -90 <= chi <= 90 else "anti"
+        results.append((resi, chi, conformation))
+    return results
+
+
 def add_output_args(parser):
     """
     Add the shared output-formatting flags to an argparse parser so every

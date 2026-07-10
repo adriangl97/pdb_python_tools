@@ -23,6 +23,7 @@ conda env create -f environment.yml
 | `atom_tracker.py` | Per-residue/atom coordinate change between two **equivalent** structures | `atom_tracker.py a.cif b.cif` |
 | `find_contacts.py` | Inter-chain atom contacts for a chosen chain within a cutoff | `find_contacts.py a.cif -c 4 -d 4.5` |
 | `CA_difference.py` | Nearest CA/C1' distance in a second structure for every residue (structures **do not need** to be equivalent) | `CA_difference.py a.cif b.cif` |
+| `nucleotide_conformation.py` | Glycosidic syn/anti conformation of RNA nucleotides, flags unlikely syn pyrimidines (C, U) | `nucleotide_conformation.py a.cif` |
 
 ### Shared output flags
 
@@ -30,7 +31,7 @@ All analysis tools share the same output interface:
 
 - `-f/--format {tsv,csv}` — output format (default `tsv`).
 - `-o/--output PATH` — write to a file instead of stdout; refuses to overwrite an existing file unless `--force` is given.
-- `--precision N` — decimal places for distances (default `2`); `--full-precision` or negative valued prints raw floats.
+- `--precision N` — decimal places for distances or angles (default `2`); `--full-precision` or negative valued prints raw floats.
 
 > **Alignment note:** `atom_tracker.py` and `CA_difference.py` compare coordinates directly, so the two inputs must be pre-aligned first (e.g. in ChimeraX). If you just ran a refinement and are comparing the input and output, no alignment is needed.
 
@@ -93,6 +94,33 @@ t       52      SER     t       55      GLY     3.46
 
 Showing just the top three above
 
+### nucleotide_conformation.py
+
+Classify every standard RNA nucleotide (A, C, G, U) as *syn* or *anti* from the glycosidic torsion angle χ (measured O4'-C1'-N1-C2 for pyrimidines, O4'-C1'-N9-C4 for purines) and report the unlikely cases — pyrimidines (C, U) modeled in the *syn* conformation:
+
+```bash
+nucleotide_conformation.py test_files/6ouo_aligned.cif
+```
+
+```
+Chain   Residue Residue name    Chi     Conformation
+1       102     U       48.91   syn
+1       138     U       43.87   syn
+1       139     U       44.55   syn
+```
+
+Showing just the top three above.
+
+A nucleotide is called *syn* when χ is in `[-90°, +90°]` and *anti* otherwise. Three views are available (`-s` and `-a` are mutually exclusive):
+
+- *default* — only syn pyrimidines (C, U), the unlikely cases.
+- `-s/--syn` — every syn nucleotide, purines (A, G) included, and no anti ones.
+- `-a/--all` — every RNA nucleotide with its χ angle and conformation.
+
+`--precision` controls the decimal places on χ.
+
+Because the ±90° cutoff is sharp, use `-m/--margin DEG` to catch χ values sitting close to the boundary: it adds a `Borderline` column (`yes`/`no`) and, in the default and `-s` views, also lists borderline-*anti* nucleotides that are within `DEG` of the boundary and could plausibly be syn. For example, `-m 5` flags a residue at χ = -88° as borderline and surfaces one at χ = -92° that the plain call would hide.
+
 ## Test files
 
 `test_files/` also contains reference outputs (`.tsv`) produced by these commands:
@@ -100,4 +128,5 @@ Showing just the top three above
 ```bash
 atom_tracker.py -HET test_files/6ot3.cif test_files/6ouo_aligned.cif -o test_atom_tracker.tsv
 find_contacts.py test_files/6ouo_aligned.cif -c 4 -d 4.5 -o test_find_contacts.tsv
+nucleotide_conformation.py test_files/6ouo_aligned.cif -o test_nucleotide_conformation.tsv
 ```
