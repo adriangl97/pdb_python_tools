@@ -1,0 +1,7 @@
+name: pdb_python_tools
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.8
+  - numpy
+  - scipy
