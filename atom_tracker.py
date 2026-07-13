@@ -13,6 +13,7 @@ from pdb_python_tools import load_residues
 from pdb_python_tools import compare_pdb_resi_xyz
 from pdb_python_tools import add_output_args
 from pdb_python_tools import write_table
+from pdb_python_tools import write_coot_script
 import argparse
 import sys
 
@@ -46,16 +47,28 @@ def main():
     header = ["Chain", "Residue", "Residue name", "Max_Distance", "Max_atom",
               "Average_distance", "CA/C1'_distance"]
     rows = []
+    markers = []
     for resi in pdb1:
         if resi.max_xyz.xyz_change > args.min_change:
             # Blank/NA when the residue has no real CA/C1' atom in both structures
-            ca = resi.CA.xyz_change if resi.CA.altid in ("CA", "C1'") else "NA"
+            has_ca = resi.CA.altid in ("CA", "C1'")
+            ca = resi.CA.xyz_change if has_ca else "NA"
             rows.append([resi.chainid, resi.seqid, resi.restyp, resi.max_xyz.xyz_change,
                          resi.max_xyz.altid, resi.average_xyz, ca])
+            if args.coot:
+                # Center on the CA/C1' when present, else the largest-moving atom
+                center = resi.CA if has_ca else resi.max_xyz
+                label = "%s %s %s" % (resi.chainid, resi.seqid, resi.restyp)
+                markers.append((label, resi.max_xyz.xyz_change, "Å",
+                                center.x, center.y, center.z))
 
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)
+        if args.coot:
+            write_coot_script(markers, "atom_tracker: max displacement", args.coot,
+                              force=args.force, precision=args.precision,
+                              full_precision=args.full_precision)
     except FileExistsError as e:
         sys.exit(str(e))
 

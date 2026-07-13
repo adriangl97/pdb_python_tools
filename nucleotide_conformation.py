@@ -18,6 +18,7 @@ from pdb_python_tools import load_residues
 from pdb_python_tools import classify_rna_conformation
 from pdb_python_tools import add_output_args
 from pdb_python_tools import write_table
+from pdb_python_tools import write_coot_script
 import argparse
 import sys
 
@@ -66,18 +67,22 @@ def main():
         return row
 
     if args.all:
-        rows = [build_row(resi, chi, conf) for resi, chi, conf in results]
+        selected = list(results)
     elif args.syn:
         # Every syn nucleotide regardless of base, plus borderline-anti ones
-        rows = [build_row(resi, chi, conf)
-                for resi, chi, conf in results
-                if conf == "syn" or is_borderline(chi)]
+        selected = [(resi, chi, conf) for resi, chi, conf in results
+                    if conf == "syn" or is_borderline(chi)]
     else:
         # Unlikely cases: syn pyrimidines, plus borderline-anti pyrimidines that
         # sit close enough to the boundary to plausibly be syn
-        rows = [build_row(resi, chi, conf)
-                for resi, chi, conf in results
-                if resi.restyp in _PYRIMIDINES and (conf == "syn" or is_borderline(chi))]
+        selected = [(resi, chi, conf) for resi, chi, conf in results
+                    if resi.restyp in _PYRIMIDINES and (conf == "syn" or is_borderline(chi))]
+
+    rows = [build_row(resi, chi, conf) for resi, chi, conf in selected]
+    # Coot markers: center on the C1' (recorded as the residue's CA atom)
+    markers = [("%s %s %s (%s)" % (resi.chainid, resi.seqid, resi.restyp, conf),
+                chi, "°", resi.CA.x, resi.CA.y, resi.CA.z)
+               for resi, chi, conf in selected] if args.coot else []
 
     header = ["Chain", "Residue", "Residue name", "Chi", "Conformation"]
     if use_margin:
@@ -86,6 +91,10 @@ def main():
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)
+        if args.coot:
+            write_coot_script(markers, "nucleotide_conformation: glycosidic chi", args.coot,
+                              force=args.force, precision=args.precision,
+                              full_precision=args.full_precision)
     except FileExistsError as e:
         sys.exit(str(e))
 

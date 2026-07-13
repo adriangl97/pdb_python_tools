@@ -12,6 +12,7 @@ from pdb_python_tools import load_residues
 from pdb_python_tools import find_contacts_kdtree
 from pdb_python_tools import add_output_args
 from pdb_python_tools import write_table
+from pdb_python_tools import write_coot_script
 import argparse
 import sys
 
@@ -37,6 +38,18 @@ def main():
     # Find the inter-chain contacts within that distance (scipy cKDTree)
     atom_pairs = find_contacts_kdtree(pdb, args.distance, args.chain, args.polar)
 
+    def coot_marker(atom1, atom2, dist, with_atoms):
+        # Center on the midpoint of the two contacting atoms
+        mid = ((atom1.x + atom2.x) / 2.0, (atom1.y + atom2.y) / 2.0, (atom1.z + atom2.z) / 2.0)
+        if with_atoms:
+            label = "%s %s %s/%s - %s %s %s/%s" % (
+                atom1.chainid, atom1.restyp, atom1.seqid, atom1.altid,
+                atom2.chainid, atom2.restyp, atom2.seqid, atom2.altid)
+        else:
+            label = "%s %s - %s %s %s" % (
+                atom1.restyp, atom1.seqid, atom2.chainid, atom2.restyp, atom2.seqid)
+        return (label, dist, "Å", mid[0], mid[1], mid[2])
+
     if not args.all:
         # Collapse to one contact per residue pair, keeping the shortest distance.
         # Key on the full residue identity of both partners (chain + seqid).
@@ -48,16 +61,24 @@ def main():
         header = ["Residue1", "Residue1 number", "Chain2", "Residue2", "Residue2 number", "Distance"]
         rows = [[atom1.restyp, atom1.seqid, atom2.chainid, atom2.restyp, atom2.seqid, dist]
                 for atom1, atom2, dist in best.values()]
+        markers = [coot_marker(atom1, atom2, dist, False)
+                   for atom1, atom2, dist in best.values()] if args.coot else []
     else:
         header = ["Chain1", "Residue1", "Residue1 number", "Atom1",
                   "Chain2", "Residue2", "Residue2 number", "Atom2", "Distance"]
         rows = [[atom1.chainid, atom1.restyp, atom1.seqid, atom1.altid,
                  atom2.chainid, atom2.restyp, atom2.seqid, atom2.altid, dist]
                 for atom1, atom2, dist in atom_pairs]
+        markers = [coot_marker(atom1, atom2, dist, True)
+                   for atom1, atom2, dist in atom_pairs] if args.coot else []
 
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)
+        if args.coot:
+            write_coot_script(markers, "find_contacts: contacts within cutoff", args.coot,
+                              force=args.force, precision=args.precision,
+                              full_precision=args.full_precision)
     except FileExistsError as e:
         sys.exit(str(e))
 
