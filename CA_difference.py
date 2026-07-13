@@ -14,6 +14,7 @@ from pdb_python_tools import load_residues
 from pdb_python_tools import find_nearest_ca
 from pdb_python_tools import add_output_args
 from pdb_python_tools import write_table
+from pdb_python_tools import write_coot_script
 import argparse
 import sys
 
@@ -45,9 +46,18 @@ def main():
               "Residue name2", "CA/C1'_distance"]
     rows = [[r1.chainid, r1.seqid, r1.restyp, r2.chainid, r2.seqid, r2.restyp, dist]
             for r1, r2, dist in results]
+    # Coot markers: center on the first structure's CA/C1'
+    markers = [("%s %s %s -> %s %s %s" % (r1.chainid, r1.seqid, r1.restyp,
+                                          r2.chainid, r2.seqid, r2.restyp),
+                dist, "Å", r1.CA.x, r1.CA.y, r1.CA.z)
+               for r1, r2, dist in results]
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)
+        if args.coot:
+            write_coot_script(markers, "CA_difference: nearest CA/C1' distance", args.coot,
+                              force=args.force, precision=args.precision,
+                              full_precision=args.full_precision)
     except FileExistsError as e:
         sys.exit(str(e))
 
