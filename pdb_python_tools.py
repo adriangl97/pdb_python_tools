@@ -259,91 +259,6 @@ def load_residues(path, hetatm, hydrogens):
         return get_resi_from_cif(path, hetatm, hydrogens)
     raise ValueError(f"Unrecognized structure extension: {path}")
 
-#Define function to compare atom distances and write into the atom attribute
-def compare_pdb_xyz(pdb1, pdb2):
-    """
-    Compares two lists of Atoms (class)
-
-    Inputs
-    ------
-    pdb1, pdb2 : List of Atoms (class)
-
-    Returns
-    -------
-    Modifies self.xyz_change from pdb1 atoms (class) based on the
-    x, y, z change between pdb1 and pdb2.
-
-    """
-    # Iterate through the first atom list
-    for atom1 in pdb1:
-        # Iterate through the second atom list
-        for atom2 in pdb2:
-            # Make sure it is the same atom being compared (same chain, seq number and atom name)
-            if atom1.chainid == atom2.chainid:
-                if atom1.seqid == atom2.seqid:
-                    if atom1.altid == atom2.altid and isinstance(atom1.xyz_change, int):
-                        # Get coordinates from each atom
-                        x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                        x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                        # Calculate vector distance
-                        xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                        xyz = math.sqrt(xyz)
-                        # Write distance to attribute on the first list
-                        atom1.xyz_change = xyz
-                    if atom1.restyp == "TYR" or atom1.restyp == "PHE":
-                            if "CE" in atom1.altid or "CD" in atom1.altid:
-                                if "CE" in atom2.altid or "CD" in atom2.altid:
-                                    x1, y1, z1 = atom1.x, atom1.y, atom1.z
-                                    x2, y2, z2 = atom2.x, atom2.y, atom2.z
-                                    xyz = (x1-x2)**2+(y1-y2)**2+(z1-z2)**2
-                                    xyz = math.sqrt(xyz)
-                                    if xyz < atom1.xyz_change or isinstance(atom1.xyz_change, int):
-                                        atom1.xyz_change = xyz
-
-def find_max_res(pdb):
-    """
-    Finds the atom with most xyz_change and returns a list of these atoms sorted by the xyz_change.
-
-    Inputs
-    ------
-    pdb : List of Atoms (class)
-
-    Returns
-    -------
-    resi_list_max : list of Atoms from pdb with the largest xyz_change per residue.
-
-    """
-    # Prepare dummy variables
-    atom_p = Atom(0,0,0,0,0,0,0,0,0,0,0,0)
-    resi = []
-    resi_list_atom = []
-    resi_list_max = []
-    # Iterate through the atoms in the pdb list
-    for atom in pdb:
-        # Check that the atom belongs to the same residue as the one before
-        if atom.seqid == atom_p.seqid:
-            if atom.chainid == atom_p.chainid:
-                #Build the residue list with that atom
-                resi += [atom]
-        # Once it finishes going though all atoms of that residue (it considers that they are correctly ordered)
-        else:
-            # Double check that it is not empty
-            if resi != []:
-                # Build a list with the residues
-                resi_list_atom += [resi]
-                # Start a new residue
-                resi = []
-        # Reset so it compares with the previous
-        atom_p = atom
-    # add last residue:
-    resi_list_atom += [resi]
-    # Order the residue list by distance per residue and keep the max
-    for residue in resi_list_atom:
-        residue.sort(key=lambda x: x.xyz_change, reverse=True)
-        if len(residue) > 0:
-            resi_list_max += [residue[0]]
-    return resi_list_max
-
 # Symmetric/interchangeable atom-name substrings per residue type. For these
 # residues the named atoms are (near-)equivalent, so the residue's displacement
 # for such an atom is taken as the minimum distance over the swappable partners.
@@ -594,7 +509,7 @@ def _format_cell(value, precision, full_precision):
     return str(value)
 
 def write_table(header, rows, fmt="tsv", output=None, force=False,
-                precision=3, full_precision=False):
+                precision=2, full_precision=False):
     """
     Write a table (header + rows) as TSV or CSV to stdout or a file.
 
