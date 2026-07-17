@@ -7,13 +7,13 @@ largest per-atom displacement, the average atom displacement and the CA/C1'
 displacement. The table is sorted by the largest displacement first. Inputs must
 be aligned beforehand (e.g. in ChimeraX) if they do not come from the same refinement.
 """
-from pdb_python_tools import Atom
-from pdb_python_tools import Residue
-from pdb_python_tools import load_residues
-from pdb_python_tools import compare_pdb_resi_xyz
-from pdb_python_tools import add_output_args
-from pdb_python_tools import write_table
-from pdb_python_tools import write_coot_script
+from .core import Atom
+from .core import Residue
+from .core import load_residues
+from .core import compare_pdb_resi_xyz
+from .core import add_output_args
+from .core import write_table
+from .core import write_coot_script
 import argparse
 import sys
 

@@ -1,7 +1,9 @@
+# Creates a conda env with just the interpreter and pip; the package and its
+# dependencies (numpy, scipy) are installed from pyproject.toml via `pip install .`
+# (see the Installation section of the README).
 name: pdb_python_tools
 channels:
   - conda-forge
 dependencies:
   - python>=3.8
-  - numpy
-  - scipy
+  - pip

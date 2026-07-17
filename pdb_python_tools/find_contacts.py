@@ -6,13 +6,13 @@ Find all atoms of other chains within a cutoff distance of a chosen chain, using
 a scipy cKDTree. By default one contact per residue pair is reported (the
 shortest); use -a/--all to list every atom pair.
 """
-from pdb_python_tools import Atom
-from pdb_python_tools import Residue
-from pdb_python_tools import load_residues
-from pdb_python_tools import find_contacts_kdtree
-from pdb_python_tools import add_output_args
-from pdb_python_tools import write_table
-from pdb_python_tools import write_coot_script
+from .core import Atom
+from .core import Residue
+from .core import load_residues
+from .core import find_contacts_kdtree
+from .core import add_output_args
+from .core import write_table
+from .core import write_coot_script
 import argparse
 import sys
 

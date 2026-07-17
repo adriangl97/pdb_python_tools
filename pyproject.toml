@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdb_python_tools"
+# Single-sourced from pdb_python_tools/__init__.py (see [tool.setuptools.dynamic])
+dynamic = ["version"]
+description = "Command-line tools for analyzing and comparing PDB/mmCIF structures"
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.8"
+authors = [
+    { name = "Adrián González-López", email = "adriangl97@outlook.com" },
+]
+keywords = ["pdb", "mmcif", "structural-biology", "cryo-em", "crystallography"]
+dependencies = [
+    "numpy",
+    "scipy",
+]
+
+[project.urls]
+Homepage = "https://github.com/adriangl97/pdb_python_tools"
+
+[project.scripts]
+"pdb_python_tools.atom_tracker" = "pdb_python_tools.atom_tracker:main"
+"pdb_python_tools.find_contacts" = "pdb_python_tools.find_contacts:main"
+"pdb_python_tools.CA_difference" = "pdb_python_tools.CA_difference:main"
+"pdb_python_tools.nucleotide_conformation" = "pdb_python_tools.nucleotide_conformation:main"
+
+[tool.setuptools]
+packages = ["pdb_python_tools"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pdb_python_tools.__version__" }

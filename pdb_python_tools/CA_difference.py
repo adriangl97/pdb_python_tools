@@ -8,13 +8,13 @@ atom_tracker.py the two structures do not need to be equivalent or share residue
 numbering, but they should be pre-aligned first (e.g. in ChimeraX). The table is
 sorted by CA/C1' distance, largest first.
 """
-from pdb_python_tools import Atom
-from pdb_python_tools import Residue
-from pdb_python_tools import load_residues
-from pdb_python_tools import find_nearest_ca
-from pdb_python_tools import add_output_args
-from pdb_python_tools import write_table
-from pdb_python_tools import write_coot_script
+from .core import Atom
+from .core import Residue
+from .core import load_residues
+from .core import find_nearest_ca
+from .core import add_output_args
+from .core import write_table
+from .core import write_coot_script
 import argparse
 import sys
 

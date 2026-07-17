@@ -12,13 +12,13 @@ since a syn pyrimidine is unusual and often points to a modeling error.
 Use -s/--syn to list every syn nucleotide, purines (A, G) included, and no anti ones
 use -a/--all to list every RNA nucleotide with its chi angle and conformation.
 """
-from pdb_python_tools import Atom
-from pdb_python_tools import Residue
-from pdb_python_tools import load_residues
-from pdb_python_tools import classify_rna_conformation
-from pdb_python_tools import add_output_args
-from pdb_python_tools import write_table
-from pdb_python_tools import write_coot_script
+from .core import Atom
+from .core import Residue
+from .core import load_residues
+from .core import classify_rna_conformation
+from .core import add_output_args
+from .core import write_table
+from .core import write_coot_script
 import argparse
 import sys
 
