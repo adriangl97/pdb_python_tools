@@ -259,18 +259,33 @@ def load_residues(path, hetatm, hydrogens):
         return get_resi_from_cif(path, hetatm, hydrogens)
     raise ValueError(f"Unrecognized structure extension: {path}")
 
-# Symmetric/interchangeable atom-name substrings per residue type. For these
-# residues the named atoms are (near-)equivalent, so the residue's displacement
-# for such an atom is taken as the minimum distance over the swappable partners.
+# Interchangeable atom-name pairs per residue type. Within each pair the two
+# atoms are equivalent, so swapping them is not a real movement: the
+# displacement for such an atom is the minimum over itself and its partner.
 _SYMMETRIC = {
-    "TYR": ("CE", "CD"),
-    "PHE": ("CE", "CD"),
-    "GLU": ("OE1", "OE2"),
-    "ASP": ("OD1", "OD2"),
-    "ARG": ("NH1", "NH2"),
-    "LEU": ("D1", "D2"),
-    "VAL": ("CG1", "CG2"),
+    "TYR": (("CD1", "CD2"), ("CE1", "CE2")),
+    "PHE": (("CD1", "CD2"), ("CE1", "CE2")),
+    "GLU": (("OE1", "OE2"),),
+    "ASP": (("OD1", "OD2"),),
+    "ARG": (("NH1", "NH2"),),
+    "LEU": (("CD1", "CD2"),),
+    "VAL": (("CG1", "CG2"),),
 }
+
+
+def _build_swap_map(symmetric):
+    """Expand the symmetric pairs into per-residue atom-name -> partner-name maps."""
+    swap = {}
+    for restyp, pairs in symmetric.items():
+        partners = {}
+        for first, second in pairs:
+            partners[first] = second
+            partners[second] = first
+        swap[restyp] = partners
+    return swap
+
+
+_SWAP = _build_swap_map(_SYMMETRIC)
 
 
 def compare_pdb_resi_xyz(pdb1, pdb2):
@@ -302,18 +317,25 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
         # have a real CA/C1' atom. Otherwise resi1.CA stays the dummy placeholder.
         if _has_ca(resi1) and _has_ca(resi2):
             resi1.CA.xyz_change = _euclid(resi1.CA, resi2.CA)
-        # Which (if any) atom names are interchangeable for this residue type
-        symmetric = _SYMMETRIC.get(resi1.restyp)
+        # Index resi2's atoms by name. Keep the first occurrence of a name so
+        # that alternate conformations do not displace the primary one
+        atoms2 = {}
+        for atom2 in resi2.atom_list:
+            atoms2.setdefault(atom2.altid, atom2)
+        # Which atom names are interchangeable for this residue type
+        swap = _SWAP.get(resi1.restyp, {})
         for atom1 in resi1.atom_list:
-            for atom2 in resi2.atom_list:
-                # Same atom by name: record its displacement once
-                if atom1.altid == atom2.altid and isinstance(atom1.xyz_change, int):
-                    atom1.xyz_change = _euclid(atom1, atom2)
-                # Interchangeable atoms: keep the minimum distance over the pair
-                if symmetric and (symmetric[0] in atom1.altid or symmetric[1] in atom1.altid):
-                    xyz = _euclid(atom1, atom2)
-                    if isinstance(atom1.xyz_change, int) or xyz < atom1.xyz_change:
-                        atom1.xyz_change = xyz
+            # Same atom by name, its displacement
+            match = atoms2.get(atom1.altid)
+            if match is not None:
+                atom1.xyz_change = _euclid(atom1, match)
+            # For an interchangeable atom, also measure against its symmetry
+            # partner and keep whichever distance is shorter
+            partner = atoms2.get(swap.get(atom1.altid))
+            if partner is not None:
+                xyz = _euclid(atom1, partner)
+                if match is None or xyz < atom1.xyz_change:
+                    atom1.xyz_change = xyz
 
 
 _POLAR_ELEMENTS = {"N", "O", "P", "S"}
