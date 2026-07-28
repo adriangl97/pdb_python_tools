@@ -433,11 +433,16 @@ def find_nearest_ca(pdb1, pdb2):
     return results
 
 
-# Standard RNA residue names, split into purines and pyrimidines. The
+# Standard RNA and DNA residue names, split into purines and pyrimidines. The
 # glycosidic torsion chi is defined from a different base atom for each group.
+
 _RNA_PURINES = {"A", "G"}
 _RNA_PYRIMIDINES = {"C", "U"}
-_RNA_RESIDUES = _RNA_PURINES | _RNA_PYRIMIDINES
+_DNA_PURINES = {"DA", "DG"}
+_DNA_PYRIMIDINES = {"DC", "DT", "DU"}
+_PURINES = _RNA_PURINES | _DNA_PURINES
+_PYRIMIDINES = _RNA_PYRIMIDINES | _DNA_PYRIMIDINES
+_NUCLEOTIDES = _PURINES | _PYRIMIDINES
 
 
 def _dihedral(p0, p1, p2, p3):
@@ -458,14 +463,14 @@ def _dihedral(p0, p1, p2, p3):
     return math.degrees(math.atan2(y, x))
 
 
-def classify_rna_conformation(residues):
+def classify_nucleotide_conformation(residues):
     """
-    Compute the glycosidic torsion angle chi for every standard RNA nucleotide
-    and classify it as syn or anti.
+    Compute the glycosidic torsion angle chi for every standard RNA or DNA
+    nucleotide and classify it as syn or anti.
 
-    chi is measured O4'-C1'-N1-C2 for pyrimidines (C, U) and O4'-C1'-N9-C4 for
-    purines (A, G). A nucleotide is 'syn' when chi lies in [-90, +90] degrees
-    and 'anti' otherwise.
+    chi is measured O4'-C1'-N1-C2 for pyrimidines (C, U, DC, DT, DU) and
+    O4'-C1'-N9-C4 for purines (A, G, DA, DG). A nucleotide is 'syn' when chi
+    lies in [-90, +90] degrees and 'anti' otherwise.
 
     Inputs
     ------
@@ -473,15 +478,15 @@ def classify_rna_conformation(residues):
 
     Returns
     -------
-    List of (residue, chi, conformation) for every RNA residue that has all four
-    chi atoms. Non-RNA residues, or residues missing a chi atom, are skipped.
+    List of (residue, chi, conformation) for every standard nucleotide that has
+    all four chi atoms.
     """
     results = []
     for resi in residues:
-        if resi.restyp not in _RNA_RESIDUES:
+        if resi.restyp not in _NUCLEOTIDES:
             continue
         # Chi atom names, base atom (3rd/4th) depends on purine vs pyrimidine
-        if resi.restyp in _RNA_PURINES:
+        if resi.restyp in _PURINES:
             names = ("O4'", "C1'", "N9", "C4")
         else:
             names = ("O4'", "C1'", "N1", "C2")

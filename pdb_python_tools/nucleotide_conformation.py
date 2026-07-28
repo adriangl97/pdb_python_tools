@@ -1,46 +1,45 @@
 #!/usr/bin/env python3
 """
-nucleotide_conformation.py - syn/anti glycosidic conformation of RNA nucleotides.
+nucleotide_conformation.py: syn/anti glycosidic conformation of nucleotides.
 
-Compute the glycosidic torsion angle chi for every standard RNA nucleotide and
-classify it as syn or anti (syn when chi is in [-90, +90] degrees). chi is
-measured O4'-C1'-N1-C2 for pyrimidines (C, U) and O4'-C1'-N9-C4 for purines
-(A, G).
+Compute the glycosidic torsion angle chi for every standard RNA or DNA
+nucleotide and classify it as syn or anti (syn when chi is in [-90, +90]
+degrees). chi is measured O4'-C1'-N1-C2 for pyrimidines (C, U, DC, DT, DU) and
+O4'-C1'-N9-C4 for purines (A, G, DA, DG).
 
-By default only RNA pyrimidines (C, U) in the syn conformation are reported,
-since a syn pyrimidine is unusual and often points to a modeling error. 
-Use -s/--syn to list every syn nucleotide, purines (A, G) included, and no anti ones
-use -a/--all to list every RNA nucleotide with its chi angle and conformation.
+By default only pyrimidines in the syn conformation are reported, since a syn
+pyrimidine is unusual and often points to a modeling error.
+Use -s/--syn to list every syn nucleotide, purines included, and no anti ones
+use -a/--all to list every nucleotide with its chi angle and conformation.
 """
 from .core import Atom
 from .core import Residue
 from .core import load_residues
-from .core import classify_rna_conformation
+from .core import classify_nucleotide_conformation
 from .core import add_output_args
 from .core import write_table
 from .core import write_coot_script
+from .core import _PYRIMIDINES
 import argparse
 import sys
-
-# RNA pyrimidines - the residues flagged when found in the syn conformation
-_PYRIMIDINES = {"C", "U"}
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog='nucleotide_conformation.py',
-        description='Classify RNA nucleotides as syn or anti from the glycosidic '
-                    'torsion chi and flag unlikely syn pyrimidines (C, U)',
+        description='Classify RNA and DNA nucleotides as syn or anti from the '
+                    'glycosidic torsion chi and flag unlikely syn pyrimidines '
+                    '(C, U, DC, DT, DU)',
         epilog='Usage: pdb/cif -arguments')
     parser.add_argument('pdb', help='coordinate file (pdb/cif)')
     # The three views are alternatives: default (syn pyrimidines), -s, -a
     view = parser.add_mutually_exclusive_group()
     view.add_argument('-a', '--all', action='store_true', dest='all',
-                      help='report every RNA nucleotide with its chi angle and '
-                           'conformation (default: only syn pyrimidines C/U)')
+                      help='report every RNA/DNA nucleotide with its chi angle and '
+                           'conformation (default: only syn pyrimidines)')
     view.add_argument('-s', '--syn', action='store_true', dest='syn',
-                      help='report every syn nucleotide, purines (A, G) included, '
-                           'and no anti ones')
+                      help='report every syn nucleotide, purines (A, G, DA, DG) '
+                           'included, and no anti ones')
     parser.add_argument('-m', '--margin', type=float, default=0.0,
                         help='degrees around the +/-90 syn/anti boundary to treat '
                              'as borderline; adds a Borderline column and, in the '
@@ -51,8 +50,8 @@ def main():
 
     pdb = load_residues(args.pdb, False, False)
 
-    # chi + syn/anti call for every standard RNA nucleotide
-    results = classify_rna_conformation(pdb)
+    # chi + syn/anti call for every standard RNA/DNA nucleotide
+    results = classify_nucleotide_conformation(pdb)
 
     use_margin = args.margin > 0
 

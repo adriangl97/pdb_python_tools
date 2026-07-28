@@ -33,3 +33,11 @@ packages = ["pdb_python_tools"]
 
 [tool.setuptools.dynamic]
 version = { attr = "pdb_python_tools.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Put the repo root on sys.path so the tests run from a clone without installing
+pythonpath = ["."]
+markers = [
+    "slow: golden-file tests over the ribosome structures (deselect with -m 'not slow')",
+]

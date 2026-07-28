@@ -43,7 +43,7 @@ pip install .
 | `pdb_python_tools.atom_tracker` | Per-residue/atom coordinate change between two **equivalent** structures | `pdb_python_tools.atom_tracker a.cif b.cif` |
 | `pdb_python_tools.find_contacts` | Inter-chain atom contacts for a chosen chain within a cutoff | `pdb_python_tools.find_contacts a.cif -c 4 -d 4.5` |
 | `pdb_python_tools.CA_difference` | Nearest CA/C1' distance in a second structure for every residue (structures **do not need** to be equivalent) | `pdb_python_tools.CA_difference a.cif b.cif` |
-| `pdb_python_tools.nucleotide_conformation` | Glycosidic syn/anti conformation of RNA nucleotides, flags unlikely syn pyrimidines (C, U) | `pdb_python_tools.nucleotide_conformation a.cif` |
+| `pdb_python_tools.nucleotide_conformation` | Glycosidic syn/anti conformation of RNA and DNA nucleotides, flags unlikely syn pyrimidines (C, U, DC, DT, DU) | `pdb_python_tools.nucleotide_conformation a.cif` |
 
 ### Shared output flags
 
@@ -117,7 +117,7 @@ Showing just the top three above
 
 ### pdb_python_tools.nucleotide_conformation
 
-Classify every standard RNA nucleotide (A, C, G, U) as *syn* or *anti* from the glycosidic torsion angle χ (measured O4'-C1'-N1-C2 for pyrimidines, O4'-C1'-N9-C4 for purines) and report the unlikely cases — pyrimidines (C, U) modeled in the *syn* conformation:
+Classify every standard RNA (A, C, G, U) and DNA (DA, DC, DG, DT, DU) nucleotide as *syn* or *anti* from the glycosidic torsion angle χ (measured O4'-C1'-N1-C2 for pyrimidines, O4'-C1'-N9-C4 for purines) and report the unlikely cases, pyrimidines, modeled in the *syn* conformation:
 
 ```bash
 pdb_python_tools.nucleotide_conformation test_files/6ouo_aligned.cif
@@ -134,9 +134,9 @@ Showing just the top three above.
 
 A nucleotide is called *syn* when χ is in `[-90°, +90°]` and *anti* otherwise. Three views are available (`-s` and `-a` are mutually exclusive):
 
-- *default* — only syn pyrimidines (C, U), the unlikely cases.
-- `-s/--syn` — every syn nucleotide, purines (A, G) included, and no anti ones.
-- `-a/--all` — every RNA nucleotide with its χ angle and conformation.
+- *default* — only syn pyrimidines (C, U, DC, DT, DU), the unlikely cases.
+- `-s/--syn` — every syn nucleotide, purines (A, G, DA, DG) included, and no anti ones.
+- `-a/--all` — every nucleotide with its χ angle and conformation.
 
 `--precision` controls the decimal places on χ.
 
