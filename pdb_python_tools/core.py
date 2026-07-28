@@ -22,9 +22,12 @@ class Atom:
     occ : occupancy
     biso : b factor
     xyz_change : movement compared to another pdb
-    
-    """   
-    def __init__(self, atomid, element, altid, restyp, chainid, seqid, x, y, z, occ, biso, xyz_change):
+    altloc : alternate conformation id ("" when the atom has none). Atoms of
+        different conformations are kept apart.
+
+    """
+    def __init__(self, atomid, element, altid, restyp, chainid, seqid, x, y, z, occ, biso, xyz_change,
+                 altloc=""):
         self.atomid = atomid
         self.element = element
         self.altid = altid
@@ -37,6 +40,15 @@ class Atom:
         self.occ = occ
         self.biso = biso
         self.xyz_change = xyz_change
+        self.altloc = altloc
+
+    @property
+    def key(self):
+        """
+        Identity of this atom within its residue: name plus conformation.
+
+        """
+        return (self.altid, self.altloc)
 
 class Residue:
     """
@@ -61,24 +73,70 @@ class Residue:
         self.average_xyz = average_xyz
         self.CA = CA
 
+# mmCIF null tokens: '.' means inapplicable, '?' means unknown
+_CIF_NULLS = (".", "?")
+
+
 def _safe_float(value):
-    """Convert a coordinate/occupancy/B-factor token to float, defaulting to 0.0 when blank."""
+    """
+    Convert a coordinate/occupancy/B-factor token to float.
+
+    A blank token, or an mmCIF null ('.' or '?'), becomes 0.0.
+    """
     value = value.strip()
-    if value == "":
+    if value == "" or value in _CIF_NULLS:
         return 0.0
     return float(value)
 
 
-def _dequote(token):
-    """
-    Strip surrounding double quotes from an mmCIF token.
+def _is_cif_null(token):
+    """True for a blank token or an mmCIF null ('.' or '?')."""
+    token = token.strip()
+    return token == "" or token in _CIF_NULLS
 
-    mmCIF writes atom names that contain a prime (e.g. C1') as double-quoted
-    tokens ("C1'").
+
+def _split_cif_tokens(line):
     """
-    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
-        return token[1:-1]
-    return token
+    Split one mmCIF data line into values, following quoting.
+    """
+    tokens = line.split()
+    if not any(token[0] in "'\"" for token in tokens):
+        return tokens
+    tokens = []
+    index = 0
+    length = len(line)
+    while index < length:
+        char = line[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            index += 1
+            start = index
+            while index < length:
+                if line[index] == quote and (index + 1 >= length
+                                             or line[index + 1].isspace()):
+                    break
+                index += 1
+            tokens.append(line[start:index])
+            index += 1
+        else:
+            start = index
+            while index < length and not line[index].isspace():
+                index += 1
+            tokens.append(line[start:index])
+    return tokens
+
+
+def _element_from_name(atom_name):
+    """
+    Guess an element symbol from an atom name: its first alphabetic character.
+    """
+    for char in atom_name:
+        if char.isalpha():
+            return char.upper()
+    return ""
 
 
 def _element_from_pdb(line, atom_name):
@@ -91,10 +149,7 @@ def _element_from_pdb(line, atom_name):
     element = line[76:78].strip()
     if element:
         return element
-    for char in atom_name:
-        if char.isalpha():
-            return char.upper()
-    return ""
+    return _element_from_name(atom_name)
 
 
 def _is_hydrogen(element):
@@ -132,20 +187,27 @@ def _add_atom(residues, atom, hydrogens):
     Append an Atom to the growing list of Residues, starting a new Residue when
     the chain/seqid (including insertion code) changes. Hydrogens are skipped
     unless requested. Also records the CA/C1' atom on its residue.
+
+    Every alternate conformation is kept, so a residue modelled in two
+    conformations contributes both copies of each affected atom.
     """
     # Ignore hydrogens by default; include them only when requested
     if _is_hydrogen(atom.element) and not hydrogens:
         return
-    if not residues or _res_key(residues[-1].atom_list[0]) != _res_key(atom):
+    same_residue = bool(residues) and _res_key(residues[-1].atom_list[0]) == _res_key(atom)
+    if not same_residue:
         residues.append(Residue(atom.chainid, atom.seqid, atom.restyp, [atom], 0, 0,
                                 Atom(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
     else:
         residues[-1].atom_list.append(atom)
-    # Record the CA (protein) / C1' (nucleic) atom for the residue as a separate Atom object (kept distinct from the copy in atom_list)
-    if atom.altid == "CA" or atom.altid == "C1'":
+    # Record the CA (protein) / C1' (nucleic) atom for the residue as a separate
+    # Atom object (kept distinct from the copy in atom_list). With alternate
+    # conformations the first one seen is used, so the slot holds the primary
+    # conformer rather than whichever copy happens to come last.
+    if (atom.altid == "CA" or atom.altid == "C1'") and not _has_ca(residues[-1]):
         residues[-1].CA = Atom(atom.atomid, atom.element, atom.altid, atom.restyp,
                                atom.chainid, atom.seqid, atom.x, atom.y, atom.z,
-                               atom.occ, atom.biso, 0)
+                               atom.occ, atom.biso, 0, altloc=atom.altloc)
 
 
 def get_resi_from_pdb(file, hetatm, hydrogens):
@@ -161,6 +223,7 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
     Returns
     -------
     List of residues as Residue class with list of Atom classes within each residue.
+    Every alternate conformation present in the file is kept.
     """
     residues = []
     with _open_text(file) as fh:
@@ -170,6 +233,7 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
             if record == "ATOM" or (hetatm and record == "HETATM"):
                 # Fixed-column fields per the PDB format specification
                 atom_name = line[12:16].strip()
+                alt_id = line[16:17].strip()
                 resname = line[17:20].strip()
                 chainid = line[21:22].strip()
                 # Residue key = residue sequence number + insertion code
@@ -177,9 +241,61 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
                 element = _element_from_pdb(line, atom_name)
                 atom = Atom(line[6:11].strip(), element, atom_name, resname, chainid, seqid,
                             _safe_float(line[30:38]), _safe_float(line[38:46]), _safe_float(line[46:54]),
-                            _safe_float(line[54:60]), _safe_float(line[60:66]), 0)
+                            _safe_float(line[54:60]), _safe_float(line[60:66]), 0,
+                            altloc=alt_id)
                 _add_atom(residues, atom, hydrogens)
     return residues
+
+
+# The _atom_site tags this parser understands, mapped to the field each fills.
+# Tags are matched exactly (after lower-casing), so neighbouring tags such as
+# Cartn_x_esd, label_entity_id or pdbx_formal_charge are  ignored
+_ATOM_SITE_TAGS = {
+    "group_pdb": "group",
+    "id": "atomid",
+    "type_symbol": "element",
+    "label_atom_id": "name",
+    "label_alt_id": "altloc",
+    "label_comp_id": "restyp",
+    "auth_asym_id": "chainid",
+    "label_asym_id": "chainid_alt",
+    "auth_seq_id": "seqid",
+    "label_seq_id": "seqid_alt",
+    "pdbx_pdb_ins_code": "icode",
+    "cartn_x": "x",
+    "cartn_y": "y",
+    "cartn_z": "z",
+    "occupancy": "occ",
+    "b_iso_or_equiv": "biso",
+}
+
+# auth_* ids are what users see, label_* is the fallback
+_ATOM_SITE_FALLBACKS = {"chainid": "chainid_alt", "seqid": "seqid_alt"}
+
+# Without these there is no usable atom to build
+_ATOM_SITE_REQUIRED = ("name", "restyp", "chainid", "seqid", "x", "y", "z")
+
+
+def _atom_site_columns(tags):
+    """
+    Map the tags of one loop_ header to _atom_site column indices.
+
+    """
+    columns = {}
+    is_atom_site = False
+    for index, tag in enumerate(tags):
+        if not tag.startswith("_atom_site."):
+            continue
+        is_atom_site = True
+        field = _ATOM_SITE_TAGS.get(tag[len("_atom_site."):])
+        if field is not None:
+            columns[field] = index
+    if not is_atom_site:
+        return None
+    for field, fallback in _ATOM_SITE_FALLBACKS.items():
+        if field not in columns and fallback in columns:
+            columns[field] = columns[fallback]
+    return columns
 
 
 def get_resi_from_cif(file, hetatm, hydrogens):
@@ -195,67 +311,107 @@ def get_resi_from_cif(file, hetatm, hydrogens):
     Returns
     -------
     List of residues as Residue class with list of Atom classes within each residue.
+    Every alternate conformation present in the file is kept.
+
+    Raises
+    ------
+    ValueError if the file has no _atom_site loop, or if that loop is missing a
+    column the parser needs.
     """
     residues = []
-    chainid = 999
-    seqid = 999
-    icode = 999
-    # Track column order within the _atom_site loop
-    count = -1
+    tags = None          # collecting a loop_ header
+    columns = None       # column indices, while inside _atom_site data rows
+    widest = 0           # highest column index used, to spot truncated rows
+    found_atom_site = False
+    # Column indices are hoisted into locals once per loop
+    c_group = c_atomid = c_element = c_altloc = c_icode = c_occ = c_biso = None
+    c_name = c_restyp = c_chain = c_seqid = c_x = c_y = c_z = 0
     with _open_text(file) as fh:
         for line in fh:
-            count += 1
-            # Reset the column counter at the start of a loop_
-            if "loop_" in line:
-                count = -1
-            # Learn the column order for each attribute from the loop header
-            if "esd" not in line[-4:].lower():
-                if "_atom_site.id" in line.lower():
-                    atomid = count
-                if "_atom_site.type_symbol" in line.lower():
-                    element = count
-                if "_atom_site.label_atom_id" in line.lower():
-                    altid = count
-                if "_atom_site.label_comp_id" in line.lower():
-                    restyp = count
-                if "_atom_site.auth_asym_id" in line.lower():
-                    chainid = count
-                if chainid == 999 and "_atom_site.label_asym_id" in line.lower():
-                    chainid = count
-                if "_atom_site.auth_seq_id" in line.lower():
-                    seqid = count
-                if seqid == 999 and "_atom_site.label_seq_id" in line.lower():
-                    seqid = count
-                if "_atom_site.pdbx_pdb_ins_code" in line.lower():
-                    icode = count
-                if "_atom_site.cartn_x" in line.lower():
-                    x = count
-                if "_atom_site.cartn_y" in line.lower():
-                    y = count
-                if "_atom_site.cartn_z" in line.lower():
-                    z = count
-                if "_atom_site.occupancy" in line.lower():
-                    occ = count
-                if "_atom_site.b_iso" in line.lower():
-                    biso = count
-            # Parse ATOM (always) and HETATM (when requested) rows
-            record = line[:10]
-            if "ATOM" in record or (hetatm and "HETATM" in record):
-                fields = line.split()
-                # Dequote tokens that mmCIF may wrap in double quotes
-                atom_name = _dequote(fields[altid])
-                resname = _dequote(fields[restyp])
-                chain = _dequote(fields[chainid])
-                # Residue key = auth_seq_id + insertion code (blank for '.'/'?')
-                res_seq = _dequote(fields[seqid])
-                if icode != 999:
-                    ins = _dequote(fields[icode])
-                    if ins not in (".", "?"):
-                        res_seq += ins
-                atom = Atom(fields[atomid], fields[element], atom_name, resname, chain, res_seq,
-                            float(fields[x]), float(fields[y]), float(fields[z]),
-                            float(fields[occ]), float(fields[biso]), 0)
-                _add_atom(residues, atom, hydrogens)
+            stripped = line.strip()
+            # Blank lines and comments carry no state
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped == "loop_":
+                tags, columns = [], None
+                continue
+            if stripped.startswith("_"):
+                if tags is None:
+                    # A key-value item outside a loop ends any data block
+                    columns = None
+                else:
+                    tags.append(stripped.split()[0].lower())
+                continue
+            if stripped.startswith("data_") or stripped.startswith("save_"):
+                tags, columns = None, None
+                continue
+            if stripped.startswith(";"):
+                # Multi-line text value; _atom_site never uses one
+                continue
+            # First data line after a header
+            if tags is not None:
+                columns = _atom_site_columns(tags)
+                tags = None
+                if columns is not None:
+                    missing = [f for f in _ATOM_SITE_REQUIRED if f not in columns]
+                    if missing:
+                        raise ValueError(
+                            "_atom_site loop is missing required column(s): %s"
+                            % ", ".join(sorted(missing)))
+                    widest = max(columns.values())
+                    found_atom_site = True
+                    c_group = columns.get("group")
+                    c_atomid = columns.get("atomid")
+                    c_element = columns.get("element")
+                    c_altloc = columns.get("altloc")
+                    c_icode = columns.get("icode")
+                    c_occ = columns.get("occ")
+                    c_biso = columns.get("biso")
+                    c_name = columns["name"]
+                    c_restyp = columns["restyp"]
+                    c_chain = columns["chainid"]
+                    c_seqid = columns["seqid"]
+                    c_x, c_y, c_z = columns["x"], columns["y"], columns["z"]
+            if columns is None:
+                continue
+            values = _split_cif_tokens(line)
+            if len(values) <= widest:
+                continue
+            # ATOM always, HETATM only when asked for
+            if c_group is not None:
+                group = values[c_group].upper()
+            else:
+                group = "HETATM" if stripped.startswith("HETATM") else "ATOM"
+            if group != "ATOM" and not (hetatm and group == "HETATM"):
+                continue
+            atom_name = values[c_name]
+            # An atom with no name or no coordinates is not usable
+            if (_is_cif_null(atom_name) or _is_cif_null(values[c_x])
+                    or _is_cif_null(values[c_y]) or _is_cif_null(values[c_z])):
+                continue
+            # Residue key = auth_seq_id + insertion code (blank for '.'/'?')
+            res_seq = values[c_seqid]
+            if c_icode is not None and not _is_cif_null(values[c_icode]):
+                res_seq += values[c_icode]
+            # '.'/'?' mean "no alternate conformation" and normalise to ""
+            alt_id = values[c_altloc] if c_altloc is not None else ""
+            if _is_cif_null(alt_id):
+                alt_id = ""
+            element = values[c_element] if c_element is not None else ""
+            if _is_cif_null(element):
+                element = _element_from_name(atom_name)
+            atom = Atom(values[c_atomid] if c_atomid is not None else "",
+                        element, atom_name, values[c_restyp],
+                        values[c_chain], res_seq,
+                        _safe_float(values[c_x]),
+                        _safe_float(values[c_y]),
+                        _safe_float(values[c_z]),
+                        _safe_float(values[c_occ]) if c_occ is not None else 1.0,
+                        _safe_float(values[c_biso]) if c_biso is not None else 0.0,
+                        0, altloc=alt_id)
+            _add_atom(residues, atom, hydrogens)
+    if not found_atom_site:
+        raise ValueError("No _atom_site loop found")
     return residues
 
 
@@ -352,21 +508,23 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
         # have a real CA/C1' atom. Otherwise resi1.CA stays the dummy placeholder.
         if _has_ca(resi1) and _has_ca(resi2):
             resi1.CA.xyz_change = _euclid(resi1.CA, resi2.CA)
-        # Index resi2's atoms by name. Keep the first occurrence of a name so
-        # that alternate conformations do not displace the primary one
+        # Index resi2's atoms by (name, conformation). Keying on the pair keeps
+        # alternate conformations independent: conformer A of an atom is only
+        # ever compared with conformer A in the other structure, never with B.
         atoms2 = {}
         for atom2 in resi2.atom_list:
-            atoms2.setdefault(atom2.altid, atom2)
+            atoms2.setdefault(atom2.key, atom2)
         # Which atom names are interchangeable for this residue type
         swap = _SWAP.get(resi1.restyp, {})
         for atom1 in resi1.atom_list:
-            # Same atom by name, its displacement
-            match = atoms2.get(atom1.altid)
+            # Same atom, same conformation: its displacement
+            match = atoms2.get(atom1.key)
             if match is not None:
                 atom1.xyz_change = _euclid(atom1, match)
             # For an interchangeable atom, also measure against its symmetry
-            # partner and keep whichever distance is shorter
-            partner = atoms2.get(swap.get(atom1.altid))
+            # partner and keep whichever distance is shorter.
+            partner_name = swap.get(atom1.altid)
+            partner = atoms2.get((partner_name, atom1.altloc)) if partner_name else None
             if partner is not None:
                 xyz = _euclid(atom1, partner)
                 if match is None or xyz < atom1.xyz_change:
@@ -511,10 +669,14 @@ def classify_nucleotide_conformation(residues):
     ------
     residues : list of Residue (class)
 
+    A nucleotide modelled in more than one conformation is measured once per
+    conformation
+
     Returns
     -------
-    List of (residue, chi, conformation) for every standard nucleotide that has
-    all four chi atoms.
+    List of (residue, chi, conformation, altloc) for every standard nucleotide
+    that has all four chi atoms, where altloc is the alternate conformation id
+    ("" when the residue has none).
     """
     results = []
     for resi in residues:
@@ -525,17 +687,31 @@ def classify_nucleotide_conformation(residues):
             names = ("O4'", "C1'", "N9", "C4")
         else:
             names = ("O4'", "C1'", "N1", "C2")
-        # Collect the first occurrence of each chi atom (ignores altlocs)
-        coords = {}
+        # Split the chi atoms by conformation. Atoms with no alternate id are
+        # shared, so they seed every conformation's set.
+        shared = {}
+        per_altloc = {}
         for atom in resi.atom_list:
-            if atom.altid in names and atom.altid not in coords:
-                coords[atom.altid] = (atom.x, atom.y, atom.z)
-        # Skip residues that are missing any of the four atoms
-        if len(coords) != 4:
-            continue
-        chi = _dihedral(coords[names[0]], coords[names[1]], coords[names[2]], coords[names[3]])
-        conformation = "syn" if -90 <= chi <= 90 else "anti"
-        results.append((resi, chi, conformation))
+            if atom.altid not in names:
+                continue
+            if atom.altloc:
+                per_altloc.setdefault(atom.altloc, {}).setdefault(
+                    atom.altid, (atom.x, atom.y, atom.z))
+            else:
+                shared.setdefault(atom.altid, (atom.x, atom.y, atom.z))
+        if per_altloc:
+            groups = [(alt, dict(shared, **coords))
+                      for alt, coords in sorted(per_altloc.items())]
+        else:
+            groups = [("", shared)]
+        for alt, coords in groups:
+            # Skip a conformation that is missing any of the four atoms
+            if len(coords) != 4:
+                continue
+            chi = _dihedral(coords[names[0]], coords[names[1]],
+                            coords[names[2]], coords[names[3]])
+            conformation = "syn" if -90 <= chi <= 90 else "anti"
+            results.append((resi, chi, conformation, alt))
     return results
 
 

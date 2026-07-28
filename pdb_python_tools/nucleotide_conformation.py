@@ -61,31 +61,41 @@ def main():
         # Distance to the nearest syn/anti boundary at +/-90 degrees
         return use_margin and min(abs(chi - 90), abs(chi + 90)) <= args.margin
 
-    def build_row(resi, chi, conf):
-        row = [resi.chainid, resi.seqid, resi.restyp, chi, conf]
-        if use_margin:
-            row.append("yes" if is_borderline(chi) else "no")
-        return row
-
     if args.all:
         selected = list(results)
     elif args.syn:
         # Every syn nucleotide regardless of base, plus borderline-anti ones
-        selected = [(resi, chi, conf) for resi, chi, conf in results
-                    if conf == "syn" or is_borderline(chi)]
+        selected = [r for r in results
+                    if r[2] == "syn" or is_borderline(r[1])]
     else:
         # Unlikely cases: syn pyrimidines, plus borderline-anti pyrimidines that
         # sit close enough to the boundary to plausibly be syn
-        selected = [(resi, chi, conf) for resi, chi, conf in results
-                    if resi.restyp in _PYRIMIDINES and (conf == "syn" or is_borderline(chi))]
+        selected = [r for r in results
+                    if r[0].restyp in _PYRIMIDINES and (r[2] == "syn" or is_borderline(r[1]))]
 
-    rows = [build_row(resi, chi, conf) for resi, chi, conf in selected]
+    # A nucleotide modelled in alternate conformations gives one row per
+    # conformation, so the id is shown to tell those rows apart. The column is
+    # omitted entirely when nothing in the table has an alternate conformation.
+    show_altloc = any(alt for _, _, _, alt in selected)
+
+    def build_row(resi, chi, conf, alt):
+        row = [resi.chainid, resi.seqid, resi.restyp, chi, conf]
+        if show_altloc:
+            row.append(alt or ".")
+        if use_margin:
+            row.append("yes" if is_borderline(chi) else "no")
+        return row
+
+    rows = [build_row(*entry) for entry in selected]
     # Coot markers: center on the C1' (recorded as the residue's CA atom)
-    markers = [("%s %s %s (%s)" % (resi.chainid, resi.seqid, resi.restyp, conf),
+    markers = [("%s %s %s%s (%s)" % (resi.chainid, resi.seqid, resi.restyp,
+                                     " alt " + alt if alt else "", conf),
                 chi, "°", resi.CA.x, resi.CA.y, resi.CA.z)
-               for resi, chi, conf in selected] if args.coot else []
+               for resi, chi, conf, alt in selected] if args.coot else []
 
     header = ["Chain", "Residue", "Residue name", "Chi", "Conformation"]
+    if show_altloc:
+        header.append("Altloc")
     if use_margin:
         header.append("Borderline")
 

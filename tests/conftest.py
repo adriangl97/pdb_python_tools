@@ -19,13 +19,15 @@ def dummy_ca():
 
 
 def make_atom(name, x=0.0, y=0.0, z=0.0, element=None, restyp="ALA",
-              chainid="A", seqid="1", atomid="1", occ=1.0, biso=20.0):
+              chainid="A", seqid="1", atomid="1", occ=1.0, biso=20.0, altloc=""):
     """
     Build an Atom. `element` defaults to the first character of the atom name.
+    `altloc` is the alternate conformation id ("" for none).
     """
     if element is None:
         element = name[0]
-    return Atom(atomid, element, name, restyp, chainid, seqid, x, y, z, occ, biso, 0)
+    return Atom(atomid, element, name, restyp, chainid, seqid, x, y, z, occ, biso, 0,
+                altloc=altloc)
 
 
 def make_residue(restyp, atoms, chainid="A", seqid="1"):

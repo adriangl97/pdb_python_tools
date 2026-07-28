@@ -93,7 +93,7 @@ class TestClassifyNucleotideConformation:
     @pytest.mark.parametrize("restyp", ["U", "DT"])
     @pytest.mark.parametrize("chi", [0.0, 45.0, -45.0, 89.0, -89.0])
     def test_inside_the_window_is_syn(self, chi, restyp):
-        _, measured, conformation = classify_nucleotide_conformation(
+        _, measured, conformation, _ = classify_nucleotide_conformation(
             [nucleotide(restyp, chi)])[0]
         assert measured == pytest.approx(chi, abs=1e-9)
         assert conformation == "syn"
@@ -101,7 +101,7 @@ class TestClassifyNucleotideConformation:
     @pytest.mark.parametrize("restyp", ["G", "DG"])
     @pytest.mark.parametrize("chi", [91.0, -91.0, 120.0, -120.0, 179.0])
     def test_outside_the_window_is_anti(self, chi, restyp):
-        _, measured, conformation = classify_nucleotide_conformation(
+        _, measured, conformation, _ = classify_nucleotide_conformation(
             [nucleotide(restyp, chi)])[0]
         assert measured == pytest.approx(chi, abs=1e-9)
         assert conformation == "anti"
@@ -109,7 +109,7 @@ class TestClassifyNucleotideConformation:
     @pytest.mark.parametrize("restyp", ["C", "DC"])
     @pytest.mark.parametrize("chi", [90.0, -90.0])
     def test_boundary_is_inclusive_syn(self, chi, restyp):
-        _, _, conformation = classify_nucleotide_conformation(
+        _, _, conformation, _ = classify_nucleotide_conformation(
             [nucleotide(restyp, chi)])[0]
         assert conformation == "syn"
 
@@ -117,9 +117,9 @@ class TestClassifyNucleotideConformation:
                                          ("U", "DU")])
     @pytest.mark.parametrize("chi", [-150.0, -60.0, 0.0, 60.0, 150.0])
     def test_dna_and_rna_agree_on_identical_geometry(self, rna, dna, chi):
-        _, rna_chi, rna_conf = classify_nucleotide_conformation(
+        _, rna_chi, rna_conf, _ = classify_nucleotide_conformation(
             [nucleotide(rna, chi)])[0]
-        _, dna_chi, dna_conf = classify_nucleotide_conformation(
+        _, dna_chi, dna_conf, _ = classify_nucleotide_conformation(
             [nucleotide(dna, chi)])[0]
         assert rna_chi == pytest.approx(dna_chi)
         assert rna_conf == dna_conf
@@ -138,7 +138,7 @@ class TestClassifyNucleotideConformation:
             make_atom("N1", 50.0, 50.0, 50.0),
             make_atom("C2", 60.0, 60.0, 60.0),
         ]
-        _, chi, _ = classify_nucleotide_conformation([make_residue(restyp, atoms)])[0]
+        _, chi, _, _ = classify_nucleotide_conformation([make_residue(restyp, atoms)])[0]
         assert chi == pytest.approx(30.0)
 
     @pytest.mark.parametrize("restyp", ["U", "DT"])
@@ -152,7 +152,7 @@ class TestClassifyNucleotideConformation:
             make_atom("N3", 50.0, 50.0, 50.0),
             make_atom("C4", 60.0, 60.0, 60.0),
         ]
-        _, chi, _ = classify_nucleotide_conformation([make_residue(restyp, atoms)])[0]
+        _, chi, _, _ = classify_nucleotide_conformation([make_residue(restyp, atoms)])[0]
         assert chi == pytest.approx(30.0)
 
     @pytest.mark.parametrize("restyp", ["G", "DG"])
@@ -172,6 +172,58 @@ class TestClassifyNucleotideConformation:
         atoms = [make_atom(n, float(i)) for i, n in enumerate(names)]
         assert classify_nucleotide_conformation([make_residue(restyp, atoms)]) == []
 
+    def test_no_altloc_reports_a_blank_id(self):
+        assert classify_nucleotide_conformation([nucleotide("U", 30.0)])[0][3] == ""
+
+    def test_each_conformation_is_measured_separately(self):
+        """
+        A nucleotide modelled twice gives one chi per conformation, each built
+        only from that conformation's own atoms.
+        """
+        a = fourth_point(30.0)
+        b = fourth_point(150.0)
+        atoms = [
+            make_atom("O4'", 0.0, 1.0, 0.0),
+            make_atom("C1'", 0.0, 0.0, 0.0),
+            make_atom("N1", 1.0, 0.0, 0.0),
+            make_atom("C2", *a, altloc="A"),
+            make_atom("C2", *b, altloc="B"),
+        ]
+        results = classify_nucleotide_conformation([make_residue("U", atoms)])
+        assert [(round(chi, 6), conf, alt) for _, chi, conf, alt in results] == [
+            (30.0, "syn", "A"), (150.0, "anti", "B")]
+
+    def test_conformations_do_not_share_base_atoms(self):
+        atoms = []
+        for alt, chi in (("A", 20.0), ("B", 160.0)):
+            x, y, z = fourth_point(chi)
+            atoms += [make_atom("O4'", 0.0, 1.0, 0.0, altloc=alt),
+                      make_atom("C1'", 0.0, 0.0, 0.0, altloc=alt),
+                      make_atom("N9", 1.0, 0.0, 0.0, altloc=alt),
+                      make_atom("C4", x, y, z, altloc=alt)]
+        results = classify_nucleotide_conformation([make_residue("G", atoms)])
+        assert [(round(chi, 6), alt) for _, chi, _, alt in results] == [
+            (20.0, "A"), (160.0, "B")]
+
+    def test_conformations_are_reported_in_id_order(self):
+        atoms = [make_atom("O4'", 0.0, 1.0, 0.0), make_atom("C1'", 0.0, 0.0, 0.0),
+                 make_atom("N1", 1.0, 0.0, 0.0)]
+        for alt, chi in (("C", 10.0), ("A", 20.0), ("B", 30.0)):
+            atoms.append(make_atom("C2", *fourth_point(chi), altloc=alt))
+        results = classify_nucleotide_conformation([make_residue("U", atoms)])
+        assert [alt for _, _, _, alt in results] == ["A", "B", "C"]
+
+    def test_an_incomplete_conformation_is_skipped_on_its_own(self):
+        atoms = [
+            make_atom("O4'", 0.0, 1.0, 0.0),
+            make_atom("C1'", 0.0, 0.0, 0.0),
+            make_atom("N1", 1.0, 0.0, 0.0, altloc="A"),
+            make_atom("C2", *fourth_point(30.0), altloc="A"),
+            make_atom("N1", 1.0, 0.0, 0.0, altloc="B"),
+        ]
+        results = classify_nucleotide_conformation([make_residue("U", atoms)])
+        assert [alt for _, _, _, alt in results] == ["A"]
+
     def test_residue_missing_a_chi_atom_is_skipped(self):
         resi = nucleotide("G", 0.0)
         resi.atom_list = resi.atom_list[:3]
@@ -180,14 +232,14 @@ class TestClassifyNucleotideConformation:
     def test_extra_atoms_are_ignored(self):
         resi = nucleotide("U", 30.0)
         resi.atom_list.append(make_atom("P", 50.0, 50.0, 50.0))
-        _, chi, _ = classify_nucleotide_conformation([resi])[0]
+        _, chi, _, _ = classify_nucleotide_conformation([resi])[0]
         assert chi == pytest.approx(30.0)
 
     def test_duplicate_atom_names_use_the_first(self):
         resi = nucleotide("U", 30.0)
         shifted = make_atom(PYRIMIDINE_NAMES[3], *fourth_point(120.0))
         resi.atom_list.append(shifted)
-        _, chi, _ = classify_nucleotide_conformation([resi])[0]
+        _, chi, _, _ = classify_nucleotide_conformation([resi])[0]
         assert chi == pytest.approx(30.0)
 
     def test_input_order_is_preserved(self):

@@ -531,3 +531,47 @@ class TestNucleotideConformation:
         run_tool("nucleotide_conformation", rna, "--coot", target)
         compile(target.read_text(), str(target), "exec")
         assert "A 1 U" in target.read_text()
+
+    @pytest.fixture
+    def alt_rna(self, tmp_path):
+        """One U modelled in two conformations: A is syn, B is anti."""
+        lines = [
+            pdb_atom_line(1, "O4'", "U", "A", 1, 0.0, 1.0, 0.0),
+            pdb_atom_line(2, "C1'", "U", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(3, "N1", "U", "A", 1, 1.0, 0.0, 0.0),
+        ]
+        for serial, (alt, chi) in enumerate([("A", 30.0), ("B", 150.0)], start=4):
+            t = math.radians(chi)
+            lines.append(pdb_atom_line(serial, "C2", "U", "A", 1,
+                                       1.0, math.cos(t), math.sin(t), altloc=alt))
+        return write_pdb(tmp_path / "altrna.pdb", lines)
+
+    def test_each_conformation_gets_its_own_row(self, alt_rna):
+        result = run_tool("nucleotide_conformation", alt_rna, "-a")
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout.splitlines()
+        assert lines[0].split("\t") == ["Chain", "Residue", "Residue name",
+                                        "Chi", "Conformation", "Altloc"]
+        rows = [line.split("\t") for line in lines[1:]]
+        assert [(r[3], r[4], r[5]) for r in rows] == [("30.00", "syn", "A"),
+                                                      ("150.00", "anti", "B")]
+
+    def test_altloc_column_absent_without_alternates(self, rna):
+        header = run_tool("nucleotide_conformation", rna, "-a").stdout.splitlines()[0]
+        assert "Altloc" not in header
+
+    def test_default_view_flags_only_the_syn_conformation(self, alt_rna):
+        rows = run_tool("nucleotide_conformation", alt_rna).stdout.splitlines()[1:]
+        assert [r.split("\t")[5] for r in rows] == ["A"]
+
+    def test_altloc_column_coexists_with_the_margin_column(self, alt_rna):
+        header = run_tool("nucleotide_conformation", alt_rna, "-a",
+                          "-m", "5").stdout.splitlines()[0].split("\t")
+        assert header[-2:] == ["Altloc", "Borderline"]
+
+    def test_coot_script_labels_each_conformation(self, alt_rna, tmp_path):
+        target = tmp_path / "coot.py"
+        run_tool("nucleotide_conformation", alt_rna, "-a", "--coot", target)
+        content = target.read_text()
+        compile(content, str(target), "exec")
+        assert "alt A" in content and "alt B" in content

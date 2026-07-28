@@ -45,15 +45,17 @@ pip install .
 | `pdb_python_tools.CA_difference` | Nearest CA/C1' distance in a second structure for every residue (structures **do not need** to be equivalent) | `pdb_python_tools.CA_difference a.cif b.cif` |
 | `pdb_python_tools.nucleotide_conformation` | Glycosidic syn/anti conformation of RNA and DNA nucleotides, flags unlikely syn pyrimidines (C, U, DC, DT, DU) | `pdb_python_tools.nucleotide_conformation a.cif` |
 
-### Shared output flags
+### Shared flags
 
-All analysis tools share the same output interface:
+All analysis tools share the same interface:
 
 - `-f/--format {tsv,csv}` — output format (default `tsv`).
 - `-o/--output PATH` — write to a file instead of stdout; refuses to overwrite an existing file unless `--force` is given.
 - `--precision N` — decimal places for distances or angles (default `2`); `--full-precision` or negative valued prints raw floats.
 - `--coot PATH` — additionally write a [Coot](https://www2.mrc-lmb.cam.ac.uk/personal/pemsley/coot/) script (for 0.9, unsure if it works for Coot 1) to `PATH`. Open it in Coot (`Calculate → Run Script…`) to get a dialog listing the results in the same order as the table, each row showing the relevant number; clicking a row recenters the view on that residue's CA/C1' (or, for `pdb_python_tools.find_contacts`, on the contact midpoint). Refuses to overwrite `PATH` unless `--force` is given.
 - `--version` — print the installed version and exit.
+
+> **Alternate conformations:** every alternate conformation in a file is read and kept, and the conformations are tracked separately, but the global (e.g. Max distance and CA/C1' distance) are shared for now.
 
 > **Alignment note:** `pdb_python_tools.atom_tracker` and `pdb_python_tools.CA_difference` compare coordinates directly, so the two inputs must be pre-aligned first (e.g. in ChimeraX). If you just ran a refinement and are comparing the input and output, no alignment is needed.
 
@@ -140,6 +142,8 @@ A nucleotide is called *syn* when χ is in `[-90°, +90°]` and *anti* otherwise
 - `-a/--all` — every nucleotide with its χ angle and conformation.
 
 `--precision` controls the decimal places on χ.
+
+A nucleotide modelled in more than one conformation is measured once per conformation. An `Altloc` column is added to tell those rows apart
 
 Because the ±90° cutoff is sharp, use `-m/--margin DEG` to catch χ values sitting close to the boundary: it adds a `Borderline` column (`yes`/`no`) and, in the default and `-s` views, also lists borderline-*anti* nucleotides that are within `DEG` of the boundary and could plausibly be syn. For example, `-m 5` flags a residue at χ = -88° as borderline and surfaces one at χ = -92° that the plain call would hide.
 

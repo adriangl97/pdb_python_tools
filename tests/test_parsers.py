@@ -9,12 +9,13 @@ import shutil
 
 import pytest
 
-from pdb_python_tools.core import (_dequote, _element_from_pdb, _is_hydrogen,
-                                   _safe_float, get_resi_from_cif,
-                                   get_resi_from_pdb, load_residues,
-                                   load_residues_or_exit)
+from pdb_python_tools.core import (_element_from_pdb, _is_hydrogen,
+                                   _safe_float, _split_cif_tokens,
+                                   get_resi_from_cif, get_resi_from_pdb,
+                                   load_residues, load_residues_or_exit)
 
-from conftest import atom_names, by_key, pdb_atom_line, write_pdb
+from conftest import (atom_names, by_key, cif_atom_row, pdb_atom_line,
+                      write_cif, write_pdb)
 
 
 class TestHelpers:
@@ -27,15 +28,33 @@ class TestHelpers:
     def test_safe_float(self, token, expected):
         assert _safe_float(token) == expected
 
-    @pytest.mark.parametrize("token,expected", [
-        ('"C1\'"', "C1'"),
-        ("CA", "CA"),
-        ('"O4\'"', "O4'"),
-        ('"', '"'),      
-        ("", ""),
+    @pytest.mark.parametrize("line,expected", [
+        # Plain values
+        ("ATOM 1 C CA . SER A 1", ["ATOM", "1", "C", "CA", ".", "SER", "A", "1"]),
+        # A primed atom name, double-quoted
+        ('ATOM 1 C "C1\'" . G A 1', ["ATOM", "1", "C", "C1'", ".", "G", "A", "1"]),
+        ('ATOM 1 O "O4\'" .', ["ATOM", "1", "O", "O4'", "."]),
+        # The same name written bare
+        ("ATOM 1 O O5' .", ["ATOM", "1", "O", "O5'", "."]),
+        ("ATOM 1 C C4'", ["ATOM", "1", "C", "C4'"]),
+        # Single quotes
+        ("ATOM 'a value' X", ["ATOM", "a value", "X"]),
+        ('ATOM "two words" X', ["ATOM", "two words", "X"]),
+        # Irregular whitespace and trailing newline
+        ("  ATOM   1  \t C \n", ["ATOM", "1", "C"]),
+        ("", []),
+        ("   \n", []),
     ])
-    def test_dequote(self, token, expected):
-        assert _dequote(token) == expected
+    def test_split_cif_tokens(self, line, expected):
+        assert _split_cif_tokens(line) == expected
+
+    def test_split_cif_tokens_keeps_an_interior_quote(self):
+        # A quote that is not at the start of a token is part of the value
+        assert _split_cif_tokens("O5' C1'") == ["O5'", "C1'"]
+
+    def test_split_cif_tokens_matches_whitespace_split_for_plain_rows(self):
+        line = "ATOM 12 N N . ALA A 3 ? 1.000 2.000 3.000 1.00 20.00 1\n"
+        assert _split_cif_tokens(line) == line.split()
 
     @pytest.mark.parametrize("element,expected", [
         ("H", True), ("h", True), ("D", True), ("d", True),
@@ -217,6 +236,278 @@ class TestCifParser:
             for a, b in zip(resi.atom_list, other.atom_list):
                 assert (a.x, a.y, a.z) == (b.x, b.y, b.z)
                 assert a.element == b.element
+
+
+MINIMAL_ROW = "ATOM 1 C CA . SER A 1 ? 1.000 2.000 3.000 1.00 20.00 10 B"
+MINIMAL_TAGS = ["group_PDB", "id", "type_symbol", "label_atom_id", "label_alt_id",
+                "label_comp_id", "label_asym_id", "label_seq_id",
+                "pdbx_PDB_ins_code", "Cartn_x", "Cartn_y", "Cartn_z",
+                "occupancy", "B_iso_or_equiv", "auth_seq_id", "auth_asym_id"]
+
+
+def write_loop(path, tags, rows, prefix="data_test\n#\n", suffix="#\n"):
+    """Write a bare mmCIF loop with the given _atom_site tags and data rows."""
+    text = prefix + "loop_\n"
+    text += "".join("_atom_site.%s\n" % tag for tag in tags)
+    text += "".join(row.rstrip("\n") + "\n" for row in rows)
+    text += suffix
+    path.write_text(text)
+    return str(path)
+
+
+class TestCifLoopHeader:
+    """
+    The _atom_site loop is located by reading the loop_ header, so column order,
+    extra columns and neighbouring loops must not matter.
+    """
+
+    def test_minimal_loop(self, tmp_path):
+        path = write_loop(tmp_path / "m.cif", MINIMAL_TAGS, [MINIMAL_ROW])
+        residues = get_resi_from_cif(path, False, False)
+        assert by_key(residues).keys() == {("B", "10")}
+
+    def test_column_order_does_not_matter(self, tmp_path):
+        # Reverse every column
+        tags = list(reversed(MINIMAL_TAGS))
+        row = " ".join(reversed(MINIMAL_ROW.split()))
+        path = write_loop(tmp_path / "rev.cif", tags, [row])
+        resi = get_resi_from_cif(path, False, False)[0]
+        assert (resi.chainid, resi.seqid, resi.restyp) == ("B", "10", "SER")
+        assert (resi.atom_list[0].x, resi.atom_list[0].y, resi.atom_list[0].z) == (1.0, 2.0, 3.0)
+
+    def test_unknown_extra_columns_are_ignored(self, tmp_path):
+        tags = MINIMAL_TAGS + ["pdbx_formal_charge", "pdbx_PDB_model_num"]
+        path = write_loop(tmp_path / "x.cif", tags, [MINIMAL_ROW + " ? 1"])
+        assert len(get_resi_from_cif(path, False, False)) == 1
+
+    def test_esd_columns_do_not_shadow_their_values(self, tmp_path):
+        """Cartn_x_esd must never be mistaken for Cartn_x."""
+        tags = MINIMAL_TAGS + ["Cartn_x_esd", "Cartn_y_esd", "Cartn_z_esd",
+                               "occupancy_esd", "B_iso_or_equiv_esd"]
+        path = write_loop(tmp_path / "esd.cif", tags,
+                          [MINIMAL_ROW + " 9.999 9.999 9.999 9.99 9.99"])
+        atom = get_resi_from_cif(path, False, False)[0].atom_list[0]
+        assert (atom.x, atom.y, atom.z) == (1.0, 2.0, 3.0)
+        assert atom.occ == 1.0
+        assert atom.biso == 20.0
+
+    def test_esd_columns_work_without_a_trailing_newline(self, tmp_path):
+        tags = MINIMAL_TAGS + ["Cartn_x_esd"]
+        target = tmp_path / "nonl.cif"
+        text = "data_t\nloop_\n"
+        text += "".join("_atom_site.%s\n" % t for t in tags)
+        text += MINIMAL_ROW + " 9.999"          # no trailing newline
+        target.write_text(text)
+        atom = get_resi_from_cif(str(target), False, False)[0].atom_list[0]
+        assert atom.x == 1.0
+
+    def test_other_loops_are_skipped(self, tmp_path):
+        target = tmp_path / "multi.cif"
+        text = "data_test\n#\nloop_\n_entity.id\n_entity.type\n1 polymer\n2 water\n#\n"
+        text += "loop_\n"
+        text += "".join("_atom_site.%s\n" % t for t in MINIMAL_TAGS)
+        text += MINIMAL_ROW + "\n#\n"
+        # A related loop whose tags start with _atom_site_ but are not _atom_site.
+        text += "loop_\n_atom_site_anisotrop.id\n_atom_site_anisotrop.U[1][1]\n1 0.1\n2 0.2\n#\n"
+        target.write_text(text)
+        residues = get_resi_from_cif(str(target), False, False)
+        assert len(residues) == 1
+        assert atom_names(residues[0]) == ["CA"]
+
+    def test_a_second_atom_site_loop_is_also_read(self, tmp_path):
+        target = tmp_path / "two.cif"
+        text = "data_test\n#\nloop_\n"
+        text += "".join("_atom_site.%s\n" % t for t in MINIMAL_TAGS)
+        text += MINIMAL_ROW + "\n#\n"
+        text += "loop_\n"
+        text += "".join("_atom_site.%s\n" % t for t in MINIMAL_TAGS)
+        text += MINIMAL_ROW.replace(" 10 B", " 11 B") + "\n#\n"
+        target.write_text(text)
+        assert len(get_resi_from_cif(str(target), False, False)) == 2
+
+    def test_key_value_items_end_the_data_block(self, tmp_path):
+        target = tmp_path / "kv.cif"
+        text = "data_test\n#\nloop_\n"
+        text += "".join("_atom_site.%s\n" % t for t in MINIMAL_TAGS)
+        text += MINIMAL_ROW + "\n"
+        text += "_cell.length_a 100.0\n"
+        text += "some stray data line that must not be parsed as an atom\n"
+        target.write_text(text)
+        assert len(get_resi_from_cif(str(target), False, False)) == 1
+
+    def test_missing_atom_site_loop_raises(self, tmp_path):
+        target = tmp_path / "none.cif"
+        target.write_text("data_test\n#\nloop_\n_entity.id\n1\n#\n")
+        with pytest.raises(ValueError, match="No _atom_site loop found"):
+            get_resi_from_cif(str(target), False, False)
+
+    def test_empty_cif_raises_rather_than_returning_nothing(self, tmp_path):
+        target = tmp_path / "empty.cif"
+        target.write_text("")
+        with pytest.raises(ValueError, match="No _atom_site loop found"):
+            get_resi_from_cif(str(target), False, False)
+
+    @pytest.mark.parametrize("drop", ["label_atom_id", "label_comp_id",
+                                      "Cartn_x", "Cartn_y", "Cartn_z"])
+    def test_missing_required_column_names_it(self, tmp_path, drop):
+        """A malformed loop must say what is missing, not raise UnboundLocalError."""
+        tags = [t for t in MINIMAL_TAGS if t != drop]
+        row = " ".join(v for t, v in zip(MINIMAL_TAGS, MINIMAL_ROW.split()) if t != drop)
+        path = write_loop(tmp_path / "bad.cif", tags, [row])
+        with pytest.raises(ValueError, match="missing required column"):
+            get_resi_from_cif(path, False, False)
+
+    def test_missing_chain_column_is_reported(self, tmp_path):
+        tags = [t for t in MINIMAL_TAGS if t not in ("label_asym_id", "auth_asym_id")]
+        row = " ".join(v for t, v in zip(MINIMAL_TAGS, MINIMAL_ROW.split())
+                       if t not in ("label_asym_id", "auth_asym_id"))
+        path = write_loop(tmp_path / "nochain.cif", tags, [row])
+        with pytest.raises(ValueError, match="chainid"):
+            get_resi_from_cif(path, False, False)
+
+    def test_optional_columns_may_be_absent(self, tmp_path):
+        keep = ["label_atom_id", "label_comp_id", "label_asym_id", "label_seq_id",
+                "Cartn_x", "Cartn_y", "Cartn_z"]
+        row = "CA SER A 1 1.000 2.000 3.000"
+        path = write_loop(tmp_path / "min.cif", keep, [row])
+        resi = get_resi_from_cif(path, False, False)[0]
+        atom = resi.atom_list[0]
+        # With no group_PDB column a row is taken as an ATOM record unless the
+        # line itself begins with HETATM
+        assert atom.altid == "CA"
+        assert atom.occ == 1.0      # defaulted
+        assert atom.biso == 0.0     # defaulted
+        assert atom.element == "C"  # derived from the atom name, no type_symbol
+
+    def test_truncated_row_is_skipped(self, tmp_path):
+        path = write_loop(tmp_path / "short.cif", MINIMAL_TAGS,
+                          [MINIMAL_ROW, "ATOM 2 C CB"])
+        assert sum(len(r.atom_list) for r in get_resi_from_cif(path, False, False)) == 1
+
+    def test_null_coordinates_skip_the_atom(self, tmp_path):
+        bad = MINIMAL_ROW.replace(" 1.000 2.000 3.000 ", " ? ? ? ")
+        path = write_loop(tmp_path / "null.cif", MINIMAL_TAGS, [MINIMAL_ROW, bad])
+        assert sum(len(r.atom_list) for r in get_resi_from_cif(path, False, False)) == 1
+
+    def test_group_pdb_selects_hetatm(self, tmp_path):
+        # The HETATM row sits on its own residue so the two cases are distinct
+        het = (MINIMAL_ROW.replace("ATOM ", "HETATM ").replace(" SER ", " MG ")
+               .replace(" CA ", " MG ").replace(" 10 B", " 99 B"))
+        path = write_loop(tmp_path / "het.cif", MINIMAL_TAGS, [MINIMAL_ROW, het])
+        assert by_key(get_resi_from_cif(path, False, False)).keys() == {("B", "10")}
+        assert by_key(get_resi_from_cif(path, True, False)).keys() == {("B", "10"),
+                                                                       ("B", "99")}
+
+    def test_group_pdb_is_preferred_over_the_line_text(self, tmp_path):
+        """
+        A row whose group_PDB says HETATM is a HETATM 
+        """
+        tags = ["label_atom_id", "group_PDB", "label_comp_id", "label_asym_id",
+                "label_seq_id", "Cartn_x", "Cartn_y", "Cartn_z"]
+        path = write_loop(tmp_path / "grp.cif", tags,
+                          ["MG HETATM MG C 1 0.000 0.000 0.000"])
+        assert get_resi_from_cif(path, False, False) == []
+        assert len(get_resi_from_cif(path, True, False)) == 1
+
+
+class TestAltlocs:
+
+    def pdb_with_altlocs(self, tmp_path):
+        return write_pdb(tmp_path / "alt.pdb", [
+            pdb_atom_line(1, "N", "SER", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(2, "CA", "SER", "A", 1, 1.0, 0.0, 0.0),
+            pdb_atom_line(3, "CB", "SER", "A", 1, 2.0, 0.0, 0.0, altloc="A", occ=0.6),
+            pdb_atom_line(4, "CB", "SER", "A", 1, 9.0, 0.0, 0.0, altloc="B", occ=0.4),
+            pdb_atom_line(5, "OG", "SER", "A", 1, 3.0, 0.0, 0.0, altloc="A", occ=0.6),
+            pdb_atom_line(6, "OG", "SER", "A", 1, 8.0, 0.0, 0.0, altloc="B", occ=0.4),
+        ])
+
+    def cif_with_altlocs(self, tmp_path):
+        rows = [
+            cif_atom_row(1, "N", "N", "SER", 1, 0.0, 0.0, 0.0),
+            cif_atom_row(2, "C", "CA", "SER", 1, 1.0, 0.0, 0.0),
+            cif_atom_row(3, "C", "CB", "SER", 1, 2.0, 0.0, 0.0, altloc="A", occ=0.6),
+            cif_atom_row(4, "C", "CB", "SER", 1, 9.0, 0.0, 0.0, altloc="B", occ=0.4),
+            cif_atom_row(5, "O", "OG", "SER", 1, 3.0, 0.0, 0.0, altloc="A", occ=0.6),
+            cif_atom_row(6, "O", "OG", "SER", 1, 8.0, 0.0, 0.0, altloc="B", occ=0.4),
+        ]
+        return write_cif(tmp_path / "alt.cif", rows)
+
+    def test_pdb_keeps_every_conformer(self, tmp_path):
+        resi = get_resi_from_pdb(self.pdb_with_altlocs(tmp_path), False, False)[0]
+        assert atom_names(resi) == ["N", "CA", "CB", "CB", "OG", "OG"]
+        assert [a.x for a in resi.atom_list] == [0.0, 1.0, 2.0, 9.0, 3.0, 8.0]
+
+    def test_cif_keeps_every_conformer(self, tmp_path):
+        resi = get_resi_from_cif(self.cif_with_altlocs(tmp_path), False, False)[0]
+        assert atom_names(resi) == ["N", "CA", "CB", "CB", "OG", "OG"]
+        assert [a.x for a in resi.atom_list] == [0.0, 1.0, 2.0, 9.0, 3.0, 8.0]
+
+    def test_both_parsers_agree(self, tmp_path):
+        from_pdb = get_resi_from_pdb(self.pdb_with_altlocs(tmp_path), False, False)[0]
+        from_cif = get_resi_from_cif(self.cif_with_altlocs(tmp_path), False, False)[0]
+        assert atom_names(from_pdb) == atom_names(from_cif)
+        assert [a.x for a in from_pdb.atom_list] == [a.x for a in from_cif.atom_list]
+
+    def test_conformers_stay_on_one_residue(self, tmp_path):
+        assert len(get_resi_from_pdb(self.pdb_with_altlocs(tmp_path), False, False)) == 1
+
+    def test_repeated_atom_names_without_an_altloc_are_also_kept(self, tmp_path):
+        path = write_pdb(tmp_path / "plain.pdb", [
+            pdb_atom_line(1, "CB", "SER", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(2, "CB", "SER", "A", 1, 5.0, 0.0, 0.0),
+        ])
+        assert atom_names(get_resi_from_pdb(path, False, False)[0]) == ["CB", "CB"]
+
+    def test_the_ca_slot_takes_the_primary_conformer(self, tmp_path):
+        path = write_pdb(tmp_path / "altca.pdb", [
+            pdb_atom_line(1, "CA", "SER", "A", 1, 1.0, 0.0, 0.0, altloc="A"),
+            pdb_atom_line(2, "CA", "SER", "A", 1, 7.0, 0.0, 0.0, altloc="B"),
+        ])
+        resi = get_resi_from_pdb(path, False, False)[0]
+        assert resi.CA.x == 1.0
+        assert resi.CA.altloc == "A"
+        assert [a.x for a in resi.atom_list] == [1.0, 7.0]
+
+    def test_altloc_is_recorded_on_each_atom(self, tmp_path):
+        resi = get_resi_from_pdb(self.pdb_with_altlocs(tmp_path), False, False)[0]
+        assert [(a.altid, a.altloc) for a in resi.atom_list] == [
+            ("N", ""), ("CA", ""), ("CB", "A"), ("CB", "B"),
+            ("OG", "A"), ("OG", "B")]
+
+    def test_cif_altloc_is_recorded_on_each_atom(self, tmp_path):
+        resi = get_resi_from_cif(self.cif_with_altlocs(tmp_path), False, False)[0]
+        assert [(a.altid, a.altloc) for a in resi.atom_list] == [
+            ("N", ""), ("CA", ""), ("CB", "A"), ("CB", "B"),
+            ("OG", "A"), ("OG", "B")]
+
+    def test_cif_null_altloc_becomes_blank(self, tmp_path):
+        # '.' and '?' mean "no alternate conformation" and must not become ids
+        rows = [cif_atom_row(1, "N", "N", "SER", 1, 0.0, 0.0, 0.0, altloc="."),
+                cif_atom_row(2, "C", "CA", "SER", 1, 1.0, 0.0, 0.0, altloc="?")]
+        resi = get_resi_from_cif(write_cif(tmp_path / "null.cif", rows), False, False)[0]
+        assert [a.altloc for a in resi.atom_list] == ["", ""]
+
+    def test_atom_key_pairs_name_with_conformation(self, tmp_path):
+        resi = get_resi_from_pdb(self.pdb_with_altlocs(tmp_path), False, False)[0]
+        keys = [a.key for a in resi.atom_list]
+        assert keys == [("N", ""), ("CA", ""), ("CB", "A"), ("CB", "B"),
+                        ("OG", "A"), ("OG", "B")]
+        assert len(set(keys)) == len(keys)
+
+    def test_each_residue_keeps_its_own_conformers(self, tmp_path):
+        path = write_pdb(tmp_path / "two.pdb", [
+            pdb_atom_line(1, "CB", "SER", "A", 1, 0.0, 0.0, 0.0, altloc="A"),
+            pdb_atom_line(2, "CB", "SER", "A", 1, 9.0, 0.0, 0.0, altloc="B"),
+            pdb_atom_line(3, "CB", "SER", "A", 2, 0.0, 5.0, 0.0, altloc="A"),
+            pdb_atom_line(4, "CB", "SER", "A", 2, 9.0, 5.0, 0.0, altloc="B"),
+        ])
+        residues = get_resi_from_pdb(path, False, False)
+        assert [atom_names(r) for r in residues] == [["CB", "CB"], ["CB", "CB"]]
+
+    def test_load_residues_keeps_every_conformer(self, tmp_path):
+        path = self.pdb_with_altlocs(tmp_path)
+        assert len(load_residues(path, False, False)[0].atom_list) == 6
 
 
 class TestGzipInput:

@@ -131,6 +131,70 @@ class TestSymmetricAtoms:
         assert moved["OD1"] == pytest.approx(9.0)
 
 
+class TestAlternateConformations:
+    """
+    Atoms of different conformations are matched independently: conformer A is
+    only ever compared with conformer A, never with B.
+    """
+
+    def test_conformers_get_their_own_displacements(self):
+        resi1 = make_residue("SER", [make_atom("CB", 0.0, altloc="A"),
+                                     make_atom("CB", 10.0, altloc="B")])
+        resi2 = make_residue("SER", [make_atom("CB", 1.0, altloc="A"),
+                                     make_atom("CB", 14.0, altloc="B")])
+        compare_pdb_resi_xyz([resi1], [resi2])
+        assert [(a.altloc, a.xyz_change) for a in resi1.atom_list] == [
+            ("A", pytest.approx(1.0)), ("B", pytest.approx(4.0))]
+
+    def test_conformer_b_is_not_measured_against_conformer_a(self):
+        resi1 = make_residue("SER", [make_atom("CB", 0.0, altloc="A"),
+                                     make_atom("CB", 9.0, altloc="B")])
+        resi2 = make_residue("SER", [make_atom("CB", 0.0, altloc="A"),
+                                     make_atom("CB", 9.0, altloc="B")])
+        compare_pdb_resi_xyz([resi1], [resi2])
+        # Neither conformer moved, so both are 0 - not 9 from a cross match
+        assert [a.xyz_change for a in resi1.atom_list] == [pytest.approx(0.0),
+                                                           pytest.approx(0.0)]
+
+    def test_shared_atoms_still_match(self):
+        resi1 = make_residue("SER", [make_atom("N", 0.0),
+                                     make_atom("CB", 0.0, altloc="A")])
+        resi2 = make_residue("SER", [make_atom("N", 2.0),
+                                     make_atom("CB", 5.0, altloc="A")])
+        compare_pdb_resi_xyz([resi1], [resi2])
+        assert [a.xyz_change for a in resi1.atom_list] == [pytest.approx(2.0),
+                                                           pytest.approx(5.0)]
+
+    def test_a_conformer_absent_from_the_other_structure_is_unmatched(self):
+        resi1 = make_residue("SER", [make_atom("CB", 0.0, altloc="A"),
+                                     make_atom("CB", 9.0, altloc="B")])
+        resi2 = make_residue("SER", [make_atom("CB", 1.0, altloc="A")])
+        compare_pdb_resi_xyz([resi1], [resi2])
+        # B has no counterpart, so it keeps the unset sentinel instead of
+        # silently being compared against A
+        assert resi1.atom_list[0].xyz_change == pytest.approx(1.0)
+        assert resi1.atom_list[1].xyz_change == 0
+
+    def test_symmetry_partner_must_share_the_conformation(self):
+        # OD1(A) may swap with OD2(A) but never with OD2(B)
+        resi1 = make_residue("ASP", [make_atom("OD1", 0.0, altloc="A")])
+        resi2 = make_residue("ASP", [make_atom("OD1", 9.0, altloc="A"),
+                                     make_atom("OD2", 1.0, altloc="B")])
+        compare_pdb_resi_xyz([resi1], [resi2])
+        assert resi1.atom_list[0].xyz_change == pytest.approx(9.0)
+
+    def test_symmetry_swap_within_one_conformation_still_works(self):
+        resi1 = make_residue("ASP", [make_atom("OD1", 0.0, altloc="B")])
+        resi2 = make_residue("ASP", [make_atom("OD1", 9.0, altloc="B"),
+                                     make_atom("OD2", 2.0, altloc="B")])
+        compare_pdb_resi_xyz([resi1], [resi2])
+        assert resi1.atom_list[0].xyz_change == pytest.approx(2.0)
+
+    def test_structures_without_altlocs_are_unaffected(self):
+        moved = displacements("SER", [make_atom("OG", 0.0)], [make_atom("OG", 3.0)])
+        assert moved["OG"] == pytest.approx(3.0)
+
+
 class TestSymmetryTable:
     def test_declared_pairs(self):
         """
