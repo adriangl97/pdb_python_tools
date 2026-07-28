@@ -3,7 +3,7 @@ Tests for compare_pdb_resi_xyz
 """
 import pytest
 
-from pdb_python_tools.core import _SWAP, _SYMMETRIC, compare_pdb_resi_xyz
+from pdb_python_tools.core import Atom, Residue, _SWAP, _SYMMETRIC, compare_pdb_resi_xyz
 
 from conftest import make_atom, make_residue
 
@@ -23,6 +23,29 @@ def displacements(restyp, atoms1, atoms2):
     return {atom.altid: atom.xyz_change for atom in resi1.atom_list}
 
 
+class TestUnsetDefaults:
+    def test_atom_builds_with_no_arguments(self):
+        atom = Atom()
+        assert atom.xyz_change is None
+        assert atom.altloc == ""
+
+    def test_atom_takes_keywords_in_any_order(self):
+        atom = Atom(altid="CA", x=1.0, restyp="SER")
+        assert (atom.altid, atom.restyp, atom.x) == ("CA", "SER", 1.0)
+
+    def test_residue_starts_without_a_ca(self):
+        resi = Residue("A", "1", "MG")
+        assert resi.CA is None
+        assert resi.atom_list == []
+        assert resi.max_xyz is None
+        assert resi.average_xyz is None
+
+    def test_residues_get_independent_atom_lists(self):
+        first, second = Residue("A", "1", "SER"), Residue("A", "2", "SER")
+        first.atom_list.append(make_atom("CA"))
+        assert second.atom_list == []
+
+
 class TestPlainMatching:
     def test_matched_atom_gets_its_displacement(self):
         moved = displacements("SER", [make_atom("OG", 0.0)], [make_atom("OG", 3.0)])
@@ -33,16 +56,16 @@ class TestPlainMatching:
                                      [make_atom("OG", 1.0, 2.0, 2.0)])
         assert moved["OG"] == pytest.approx(3.0)
 
-    def test_unmatched_atom_keeps_zero(self):
-        # An atom with no counterpart is left at the constructor's 0 sentinel
+    def test_unmatched_atom_stays_none(self):
+        # An atom with no counterpart was never measured, so it stays None
         moved = displacements("SER", [make_atom("OG", 10.0)], [make_atom("N", 0.0)])
-        assert moved["OG"] == 0
+        assert moved["OG"] is None
 
     def test_residue_missing_from_second_structure_is_skipped(self):
         resi1 = make_residue("SER", [make_atom("OG", 10.0)], seqid="1")
         other = make_residue("SER", [make_atom("OG", 0.0)], seqid="99")
         compare_pdb_resi_xyz([resi1], [other])
-        assert resi1.atom_list[0].xyz_change == 0
+        assert resi1.atom_list[0].xyz_change is None
 
     def test_first_occurrence_of_a_duplicated_name_wins(self):
         # Alternate conformations share an atom name; the first is used
@@ -170,10 +193,8 @@ class TestAlternateConformations:
                                      make_atom("CB", 9.0, altloc="B")])
         resi2 = make_residue("SER", [make_atom("CB", 1.0, altloc="A")])
         compare_pdb_resi_xyz([resi1], [resi2])
-        # B has no counterpart, so it keeps the unset sentinel instead of
-        # silently being compared against A
         assert resi1.atom_list[0].xyz_change == pytest.approx(1.0)
-        assert resi1.atom_list[1].xyz_change == 0
+        assert resi1.atom_list[1].xyz_change is None
 
     def test_symmetry_partner_must_share_the_conformation(self):
         # OD1(A) may swap with OD2(A) but never with OD2(B)
@@ -235,16 +256,16 @@ class TestCaDisplacement:
         compare_pdb_resi_xyz([resi1], [resi2])
         assert resi1.CA.xyz_change == pytest.approx(4.0)
 
-    def test_no_ca_leaves_the_placeholder_untouched(self):
+    def test_residue_without_a_ca_has_none(self):
         resi1 = make_residue("MG", [make_atom("MG", 0.0, element="MG")])
         resi2 = make_residue("MG", [make_atom("MG", 5.0, element="MG")])
         compare_pdb_resi_xyz([resi1], [resi2])
-        # The placeholder CA keeps its sentinel altid, so callers report NA
-        assert resi1.CA.altid not in ("CA", "C1'")
-        assert resi1.CA.xyz_change == 0
+        # No placeholder atom: the slot is simply empty, so callers report NA
+        assert resi1.CA is None
 
     def test_ca_missing_from_one_side_is_not_computed(self):
         resi1 = make_residue("SER", [make_atom("CA", 0.0), make_atom("OG", 1.0)])
         resi2 = make_residue("SER", [make_atom("OG", 3.0)])
         compare_pdb_resi_xyz([resi1], [resi2])
-        assert resi1.CA.xyz_change == 0
+        assert resi1.CA is not None
+        assert resi1.CA.xyz_change is None

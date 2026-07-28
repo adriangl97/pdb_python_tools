@@ -41,6 +41,10 @@ class TestFormatCell:
     def test_non_floats_pass_through(self, value, expected):
         assert _format_cell(value, 2, False) == expected
 
+    def test_none_prints_as_na(self):
+        assert _format_cell(None, 2, False) == "NA"
+        assert _format_cell(None, None, True) == "NA"
+
 
 class TestWriteTable:
     def test_tsv_to_stdout(self, capsys):

@@ -12,8 +12,6 @@ pyrimidine is unusual and often points to a modeling error.
 Use -s/--syn to list every syn nucleotide, purines included, and no anti ones
 use -a/--all to list every nucleotide with its chi angle and conformation.
 """
-from .core import Atom
-from .core import Residue
 from .core import load_residues_or_exit
 from .core import classify_nucleotide_conformation
 from .core import add_output_args

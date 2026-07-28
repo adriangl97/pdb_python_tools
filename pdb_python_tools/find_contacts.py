@@ -6,8 +6,6 @@ Find all atoms of other chains within a cutoff distance of a chosen chain, using
 a scipy cKDTree. By default one contact per residue pair is reported (the
 shortest); use -a/--all to list every atom pair.
 """
-from .core import Atom
-from .core import Residue
 from .core import load_residues_or_exit
 from .core import find_contacts_kdtree
 from .core import add_output_args

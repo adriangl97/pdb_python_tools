@@ -13,37 +13,36 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_FILES_DIR = os.path.join(REPO_ROOT, "test_files")
 
 
-def dummy_ca():
-    """The placeholder CA that core puts on a residue with no CA/C1' atom."""
-    return Atom(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-
-
 def make_atom(name, x=0.0, y=0.0, z=0.0, element=None, restyp="ALA",
               chainid="A", seqid="1", atomid="1", occ=1.0, biso=20.0, altloc=""):
     """
     Build an Atom. `element` defaults to the first character of the atom name.
-    `altloc` is the alternate conformation id ("" for none).
+    `altloc` is the alternate conformation id ("" for none). `xyz_change` is left
+    at its None default: nothing has been compared yet.
     """
     if element is None:
         element = name[0]
-    return Atom(atomid, element, name, restyp, chainid, seqid, x, y, z, occ, biso, 0,
+    return Atom(atomid=atomid, element=element, altid=name, restyp=restyp,
+                chainid=chainid, seqid=seqid, x=x, y=y, z=z, occ=occ, biso=biso,
                 altloc=altloc)
 
 
 def make_residue(restyp, atoms, chainid="A", seqid="1"):
     """
     Build a Residue around `atoms`, stamping the residue identity onto each atom
-    and filling the CA/C1' slot the way the parsers do.
+    and filling the CA/C1' slot the way the parsers do
+    A residue with neither a CA nor a C1' keeps CA = None.
     """
     for atom in atoms:
         atom.restyp = restyp
         atom.chainid = chainid
         atom.seqid = seqid
-    resi = Residue(chainid, seqid, restyp, atoms, 0, 0, dummy_ca())
+    resi = Residue(chainid, seqid, restyp, atoms)
     for atom in atoms:
-        if atom.altid in ("CA", "C1'"):
+        if atom.altid in ("CA", "C1'") and resi.CA is None:
             resi.CA = make_atom(atom.altid, atom.x, atom.y, atom.z,
-                                restyp=restyp, chainid=chainid, seqid=seqid)
+                                restyp=restyp, chainid=chainid, seqid=seqid,
+                                altloc=atom.altloc)
     return resi
 
 

@@ -52,6 +52,36 @@ def pair(tmp_path):
 
 
 @pytest.fixture
+def partial(tmp_path):
+    """
+    A pair where the second structure models less than the first.
+
+    SER A 1 loses its CB, so only N, CA and OG can be compared; the MG ligand has
+    no CA/C1' at all; and PHE A 2 shares no atom name with its counterpart, so
+    nothing about it can be measured.
+    """
+    first = write_pdb(tmp_path / "full.pdb", [
+        pdb_atom_line(1, "N", "SER", "A", 1, 0.0, 0.0, 0.0),
+        pdb_atom_line(2, "CA", "SER", "A", 1, 1.0, 0.0, 0.0),
+        pdb_atom_line(3, "OG", "SER", "A", 1, 2.0, 0.0, 0.0),
+        pdb_atom_line(4, "CB", "SER", "A", 1, 3.0, 0.0, 0.0),
+        pdb_atom_line(5, "CD1", "PHE", "A", 2, 0.0, 8.0, 0.0),
+        pdb_atom_line(6, "MG", "MG", "C", 1, 0.0, 0.0, 20.0, record="HETATM",
+                      element="MG"),
+    ])
+    second = write_pdb(tmp_path / "partial.pdb", [
+        pdb_atom_line(1, "N", "SER", "A", 1, 0.0, 0.0, 0.0),
+        pdb_atom_line(2, "CA", "SER", "A", 1, 1.0, 0.0, 0.0),
+        # OG moved 3 A; CB is not modelled at all
+        pdb_atom_line(3, "OG", "SER", "A", 1, 5.0, 0.0, 0.0),
+        pdb_atom_line(4, "CZ", "PHE", "A", 2, 0.0, 8.0, 0.0),
+        pdb_atom_line(5, "MG", "MG", "C", 1, 0.0, 0.0, 24.0, record="HETATM",
+                      element="MG"),
+    ])
+    return first, second
+
+
+@pytest.fixture
 def two_chains(tmp_path):
     """Two chains 3 A apart, for the contact search."""
     return write_pdb(tmp_path / "contacts.pdb", [
@@ -370,6 +400,48 @@ class TestAtomTracker:
     def test_missing_input_exits_nonzero(self, tmp_path):
         result = run_tool("atom_tracker", tmp_path / "nope.pdb", tmp_path / "nope.pdb")
         assert result.returncode != 0
+
+
+class TestUnmatchedAtoms:
+    """
+    Atoms with no counterpart in the second structure are not measured
+    """
+
+    def rows(self, pair, *extra):
+        out = run_tool("atom_tracker", *pair, *extra).stdout.splitlines()
+        return [line.split("\t") for line in out[1:]]
+
+    def test_average_uses_only_the_matched_atoms(self, partial):
+        ser = [r for r in self.rows(partial, "-HET") if r[2] == "SER"][0]
+        # N, CA and OG matched (0, 0 and 3 A); the unmodelled CB is left out
+        assert ser[3] == "3.00"
+        assert ser[5] == "1.00"
+
+    def test_max_is_unaffected(self, partial):
+        ser = [r for r in self.rows(partial, "-HET") if r[2] == "SER"][0]
+        assert (ser[3], ser[4]) == ("3.00", "OG")
+
+    def test_residue_with_nothing_matched_is_dropped(self, partial):
+        # PHE 2's only atom has no counterpart, so there is nothing to report
+        assert [r for r in self.rows(partial, "-HET", "--min-change", "-1")
+                if r[2] == "PHE"] == []
+
+    def test_residue_without_a_ca_reports_na(self, partial):
+        mg = [r for r in self.rows(partial, "-HET") if r[2] == "MG"][0]
+        assert mg[3] == "4.00"
+        assert mg[6] == "NA"
+
+    def test_ca_missing_from_the_second_structure_reports_na(self, tmp_path):
+        first = write_pdb(tmp_path / "withca.pdb", [
+            pdb_atom_line(1, "CA", "SER", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(2, "OG", "SER", "A", 1, 2.0, 0.0, 0.0),
+        ])
+        second = write_pdb(tmp_path / "noca.pdb", [
+            pdb_atom_line(1, "OG", "SER", "A", 1, 5.0, 0.0, 0.0),
+        ])
+        row = self.rows((first, second))[0]
+        assert row[3] == "3.00"
+        assert row[6] == "NA"
 
 
 @needs_scipy

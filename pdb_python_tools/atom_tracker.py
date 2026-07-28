@@ -7,8 +7,6 @@ largest per-atom displacement, the average atom displacement and the CA/C1'
 displacement. The table is sorted by the largest displacement first. Inputs must
 be aligned beforehand (e.g. in ChimeraX) if they do not come from the same refinement.
 """
-from .core import Atom
-from .core import Residue
 from .core import load_residues_or_exit
 from .core import compare_pdb_resi_xyz
 from .core import add_output_args
@@ -40,26 +38,31 @@ def main():
 
     # Compare both structures
     compare_pdb_resi_xyz(pdb1, pdb2)
+    tracked = []
     for resi in pdb1:
-        resi.max_xyz = max(resi.atom_list, key=lambda x: x.xyz_change)
-        resi.average_xyz = sum(atom.xyz_change for atom in resi.atom_list) / len(resi.atom_list)
+        matched = [atom for atom in resi.atom_list if atom.xyz_change is not None]
+        if not matched:
+            continue
+        resi.max_xyz = max(matched, key=lambda atom: atom.xyz_change)
+        resi.average_xyz = sum(atom.xyz_change for atom in matched) / len(matched)
+        tracked.append(resi)
 
-    pdb1.sort(key=lambda x: x.max_xyz.xyz_change, reverse=True)
+    tracked.sort(key=lambda resi: resi.max_xyz.xyz_change, reverse=True)
     # Build the table, keeping only residues that moved more than --min-change
     header = ["Chain", "Residue", "Residue name", "Max_Distance", "Max_atom",
               "Average_distance", "CA/C1'_distance"]
     rows = []
     markers = []
-    for resi in pdb1:
+    for resi in tracked:
         if resi.max_xyz.xyz_change > args.min_change:
-            # Blank/NA when the residue has no real CA/C1' atom in both structures
-            has_ca = resi.CA.altid in ("CA", "C1'")
-            ca = resi.CA.xyz_change if has_ca else "NA"
+            # None (printed as NA) when the residue has no real CA/C1' atom in
+            # both structures
+            ca = resi.CA.xyz_change if resi.CA is not None else None
             rows.append([resi.chainid, resi.seqid, resi.restyp, resi.max_xyz.xyz_change,
                          resi.max_xyz.altid, resi.average_xyz, ca])
             if args.coot:
                 # Center on the CA/C1' when present, else the largest-moving atom
-                center = resi.CA if has_ca else resi.max_xyz
+                center = resi.CA if resi.CA is not None else resi.max_xyz
                 label = "%s %s %s" % (resi.chainid, resi.seqid, resi.restyp)
                 markers.append((label, resi.max_xyz.xyz_change, "Å",
                                 center.x, center.y, center.z))

@@ -80,7 +80,9 @@ t       48      LYS     4.18    CB      2.38    2.57
 
 Showing just the top three above.
 
-Add `-HET` to include HETATMs, `-hy` to include hydrogens, and `--min-change` to change the reporting threshold (default `0.01`). Residues without a CA/C1' atom show `NA` in the last column.
+Add `-HET` to include HETATMs, `-hy` to include hydrogens, and `--min-change` to change the reporting threshold (default `0.01`). Residues without a CA/C1' atom in both structures show `NA` in the last column.
+
+Only atoms present in both structures are measured. An atom with no counterpart in the second file is left out of both `Max_Distance` and `Average_distance`. A residue with no atom in common at all is omitted from the table.
 
 ### pdb_python_tools.find_contacts
 

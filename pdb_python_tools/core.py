@@ -4,43 +4,48 @@ import csv
 import gzip
 import os
 import sys
+from dataclasses import dataclass, field, replace
+from typing import List, Optional
 import numpy as np
 from . import __version__
+
+
+@dataclass
 class Atom:
     """
     Define atom class.
-    
+
+
     Attributes
     ----------
     atomid : id for the atom
     element : C, N, O ...
     altid : id within residue
-    restyp : residue type 
+    restyp : residue type
     chainid : chain id
-    seqid : residue number 
+    seqid : residue number
     x, y, z : location
     occ : occupancy
     biso : b factor
-    xyz_change : movement compared to another pdb
+    xyz_change : movement compared to another pdb, or None when the atom has no
+        counterpart there
     altloc : alternate conformation id ("" when the atom has none). Atoms of
         different conformations are kept apart.
 
     """
-    def __init__(self, atomid, element, altid, restyp, chainid, seqid, x, y, z, occ, biso, xyz_change,
-                 altloc=""):
-        self.atomid = atomid
-        self.element = element
-        self.altid = altid
-        self.restyp = restyp
-        self.chainid = chainid
-        self.seqid = seqid
-        self.x = x
-        self.y = y
-        self.z = z
-        self.occ = occ
-        self.biso = biso
-        self.xyz_change = xyz_change
-        self.altloc = altloc
+    atomid: str = ""
+    element: str = ""
+    altid: str = ""
+    restyp: str = ""
+    chainid: str = ""
+    seqid: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    occ: float = 1.0
+    biso: float = 0.0
+    xyz_change: Optional[float] = None
+    altloc: str = ""
 
     @property
     def key(self):
@@ -50,6 +55,8 @@ class Atom:
         """
         return (self.altid, self.altloc)
 
+
+@dataclass
 class Residue:
     """
     Define residue class.
@@ -60,18 +67,17 @@ class Residue:
     seqid : residue number
     restyp : residue type
     atom_list : list of Atom objects belonging to that Residue
-    max_xyz : maximum xyz change within the residue
-    average_xyz : average xyz change within the residue
-    CA : Calpha/C1' Atom object
+    max_xyz : Atom with the largest xyz change within the residue, or None
+    average_xyz : average xyz change within the residue, or None
+    CA : Calpha/C1' Atom object, or None when the residue has neither
     """
-    def __init__(self, chainid, seqid, restyp, atom_list, max_xyz, average_xyz, CA):
-        self.chainid = chainid
-        self.seqid = seqid
-        self.restyp = restyp
-        self.atom_list = atom_list
-        self.max_xyz = max_xyz
-        self.average_xyz = average_xyz
-        self.CA = CA
+    chainid: str = ""
+    seqid: str = ""
+    restyp: str = ""
+    atom_list: List[Atom] = field(default_factory=list)
+    max_xyz: Optional[Atom] = None
+    average_xyz: Optional[float] = None
+    CA: Optional[Atom] = None
 
 # mmCIF null tokens: '.' means inapplicable, '?' means unknown
 _CIF_NULLS = (".", "?")
@@ -177,11 +183,6 @@ def _euclid(a, b):
     return math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
 
 
-def _has_ca(resi):
-    """True when the residue has a real CA/C1' atom"""
-    return resi.CA.altid == "CA" or resi.CA.altid == "C1'"
-
-
 def _add_atom(residues, atom, hydrogens):
     """
     Append an Atom to the growing list of Residues, starting a new Residue when
@@ -196,18 +197,16 @@ def _add_atom(residues, atom, hydrogens):
         return
     same_residue = bool(residues) and _res_key(residues[-1].atom_list[0]) == _res_key(atom)
     if not same_residue:
-        residues.append(Residue(atom.chainid, atom.seqid, atom.restyp, [atom], 0, 0,
-                                Atom(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+        # CA stays None until a CA/C1' atom actually turns up
+        residues.append(Residue(atom.chainid, atom.seqid, atom.restyp, [atom]))
     else:
         residues[-1].atom_list.append(atom)
     # Record the CA (protein) / C1' (nucleic) atom for the residue as a separate
     # Atom object (kept distinct from the copy in atom_list). With alternate
     # conformations the first one seen is used, so the slot holds the primary
     # conformer rather than whichever copy happens to come last.
-    if (atom.altid == "CA" or atom.altid == "C1'") and not _has_ca(residues[-1]):
-        residues[-1].CA = Atom(atom.atomid, atom.element, atom.altid, atom.restyp,
-                               atom.chainid, atom.seqid, atom.x, atom.y, atom.z,
-                               atom.occ, atom.biso, 0, altloc=atom.altloc)
+    if atom.altid in ("CA", "C1'") and residues[-1].CA is None:
+        residues[-1].CA = replace(atom)
 
 
 def get_resi_from_pdb(file, hetatm, hydrogens):
@@ -239,9 +238,11 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
                 # Residue key = residue sequence number + insertion code
                 seqid = line[22:26].strip() + line[26:27].strip()
                 element = _element_from_pdb(line, atom_name)
-                atom = Atom(line[6:11].strip(), element, atom_name, resname, chainid, seqid,
-                            _safe_float(line[30:38]), _safe_float(line[38:46]), _safe_float(line[46:54]),
-                            _safe_float(line[54:60]), _safe_float(line[60:66]), 0,
+                atom = Atom(atomid=line[6:11].strip(), element=element, altid=atom_name,
+                            restyp=resname, chainid=chainid, seqid=seqid,
+                            x=_safe_float(line[30:38]), y=_safe_float(line[38:46]),
+                            z=_safe_float(line[46:54]),
+                            occ=_safe_float(line[54:60]), biso=_safe_float(line[60:66]),
                             altloc=alt_id)
                 _add_atom(residues, atom, hydrogens)
     return residues
@@ -400,15 +401,15 @@ def get_resi_from_cif(file, hetatm, hydrogens):
             element = values[c_element] if c_element is not None else ""
             if _is_cif_null(element):
                 element = _element_from_name(atom_name)
-            atom = Atom(values[c_atomid] if c_atomid is not None else "",
-                        element, atom_name, values[c_restyp],
-                        values[c_chain], res_seq,
-                        _safe_float(values[c_x]),
-                        _safe_float(values[c_y]),
-                        _safe_float(values[c_z]),
-                        _safe_float(values[c_occ]) if c_occ is not None else 1.0,
-                        _safe_float(values[c_biso]) if c_biso is not None else 0.0,
-                        0, altloc=alt_id)
+            atom = Atom(atomid=values[c_atomid] if c_atomid is not None else "",
+                        element=element, altid=atom_name, restyp=values[c_restyp],
+                        chainid=values[c_chain], seqid=res_seq,
+                        x=_safe_float(values[c_x]),
+                        y=_safe_float(values[c_y]),
+                        z=_safe_float(values[c_z]),
+                        occ=_safe_float(values[c_occ]) if c_occ is not None else 1.0,
+                        biso=_safe_float(values[c_biso]) if c_biso is not None else 0.0,
+                        altloc=alt_id)
             _add_atom(residues, atom, hydrogens)
     if not found_atom_site:
         raise ValueError("No _atom_site loop found")
@@ -493,6 +494,8 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
     x, y, z change between pdb1 and pdb2. Also records the CA/C1' displacement on
     each pdb1 residue's CA attribute when both structures have that atom.
 
+    An atom with no counterpart in pdb2 is left at xyz_change = None
+
     """
     # Index pdb2 residues by (chainid, seqid)
     # seqid already carries any insertion code
@@ -505,8 +508,8 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
         if resi2 is None:
             continue
         # CA/C1' displacement: computed explicitly and only when both residues
-        # have a real CA/C1' atom. Otherwise resi1.CA stays the dummy placeholder.
-        if _has_ca(resi1) and _has_ca(resi2):
+        # have a real CA/C1' atom. Otherwise resi1.CA.xyz_change stays None.
+        if resi1.CA is not None and resi2.CA is not None:
             resi1.CA.xyz_change = _euclid(resi1.CA, resi2.CA)
         # Index resi2's atoms by (name, conformation). Keying on the pair keeps
         # alternate conformations independent: conformer A of an atom is only
@@ -527,7 +530,7 @@ def compare_pdb_resi_xyz(pdb1, pdb2):
             partner = atoms2.get((partner_name, atom1.altloc)) if partner_name else None
             if partner is not None:
                 xyz = _euclid(atom1, partner)
-                if match is None or xyz < atom1.xyz_change:
+                if atom1.xyz_change is None or xyz < atom1.xyz_change:
                     atom1.xyz_change = xyz
 
 
@@ -608,7 +611,7 @@ def find_nearest_ca(pdb1, pdb2):
     trees = {}
     targets_by_name = {}
     for name in ("CA", "C1'"):
-        targets = [resi for resi in pdb2 if resi.CA.altid == name]
+        targets = [resi for resi in pdb2 if resi.CA is not None and resi.CA.altid == name]
         if targets:
             coords = np.array([(r.CA.x, r.CA.y, r.CA.z) for r in targets])
             trees[name] = cKDTree(coords)
@@ -616,9 +619,9 @@ def find_nearest_ca(pdb1, pdb2):
 
     results = []
     for resi1 in pdb1:
-        name = resi1.CA.altid
-        if name not in trees:
+        if resi1.CA is None or resi1.CA.altid not in trees:
             continue
+        name = resi1.CA.altid
         dist, idx = trees[name].query((resi1.CA.x, resi1.CA.y, resi1.CA.z), k=1)
         resi2 = targets_by_name[name][idx]
         resi1.CA.xyz_change = float(dist)
@@ -745,7 +748,12 @@ def add_output_args(parser):
                              "(refuses to overwrite unless --force is given)")
 
 def _format_cell(value, precision, full_precision):
-    """Format a single table cell, rounding floats unless full precision is requested."""
+    """
+    Format a single table cell, rounding floats unless full precision is
+    requested. None prints as NA.
+    """
+    if value is None:
+        return "NA"
     if isinstance(value, float):
         if full_precision or precision is None or precision < 0:
             return str(value)

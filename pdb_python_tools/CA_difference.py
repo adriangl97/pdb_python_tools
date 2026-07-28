@@ -8,8 +8,6 @@ atom_tracker.py the two structures do not need to be equivalent or share residue
 numbering, but they should be pre-aligned first (e.g. in ChimeraX). The table is
 sorted by CA/C1' distance, largest first.
 """
-from .core import Atom
-from .core import Residue
 from .core import load_residues_or_exit
 from .core import find_nearest_ca
 from .core import add_output_args
@@ -52,7 +50,7 @@ def main():
     markers = [("%s %s %s -> %s %s %s" % (r1.chainid, r1.seqid, r1.restyp,
                                           r2.chainid, r2.seqid, r2.restyp),
                 dist, "Å", r1.CA.x, r1.CA.y, r1.CA.z)
-               for r1, r2, dist in results]
+               for r1, r2, dist in results] if args.coot else []
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)

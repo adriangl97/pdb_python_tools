@@ -142,9 +142,9 @@ class TestPdbParser:
         assert resi.CA.altid == "C1'"
         assert resi.CA.z == 9.0
 
-    def test_residue_without_ca_gets_the_placeholder(self, tiny_pdb):
+    def test_residue_without_ca_has_none(self, tiny_pdb):
         resi = by_key(get_resi_from_pdb(tiny_pdb, True, False))[("C", "1")]
-        assert resi.CA.altid not in ("CA", "C1'")
+        assert resi.CA is None
 
     def test_non_atom_records_ignored(self, tmp_path):
         path = write_pdb(tmp_path / "hdr.pdb", [
