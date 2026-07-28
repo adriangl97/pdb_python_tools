@@ -1,6 +1,6 @@
 # pdb_python_tools
 
-Small command-line tools for analyzing and comparing PDB/mmCIF structures, useful during modeling or structural analysis. Every tool reads `.pdb`/`.ent` and `.cif`/`.mmcif` files with a hand-written parser (no external structure library), writes a tab- or comma-separated table to stdout (or a file with `-o`), and has a `-h/--help` describing its flags.
+Small command-line tools for analyzing and comparing PDB/mmCIF structures, useful during modeling or structural analysis. Every tool reads `.pdb`/`.ent`, `.cif`/`.mmcif` and Gzipped files with a hand-written parser (no external structure library), writes a tab- or comma-separated table to stdout (or a file with `-o`), and has a `-h/--help` describing its flags.
 
 ## Requirements
 
@@ -53,6 +53,7 @@ All analysis tools share the same output interface:
 - `-o/--output PATH` — write to a file instead of stdout; refuses to overwrite an existing file unless `--force` is given.
 - `--precision N` — decimal places for distances or angles (default `2`); `--full-precision` or negative valued prints raw floats.
 - `--coot PATH` — additionally write a [Coot](https://www2.mrc-lmb.cam.ac.uk/personal/pemsley/coot/) script (for 0.9, unsure if it works for Coot 1) to `PATH`. Open it in Coot (`Calculate → Run Script…`) to get a dialog listing the results in the same order as the table, each row showing the relevant number; clicking a row recenters the view on that residue's CA/C1' (or, for `pdb_python_tools.find_contacts`, on the contact midpoint). Refuses to overwrite `PATH` unless `--force` is given.
+- `--version` — print the installed version and exit.
 
 > **Alignment note:** `pdb_python_tools.atom_tracker` and `pdb_python_tools.CA_difference` compare coordinates directly, so the two inputs must be pre-aligned first (e.g. in ChimeraX). If you just ran a refinement and are comparing the input and output, no alignment is needed.
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import math
 import csv
+import gzip
 import os
 import sys
 import numpy as np
+from . import __version__
 class Atom:
     """
     Define atom class.
@@ -100,6 +102,16 @@ def _is_hydrogen(element):
     return element.upper() in ("H", "D")
 
 
+def _open_text(path):
+    """
+    Open a structure file for reading, decompressing it when the name ends in
+    .gz. Returns a text-mode handle.
+    """
+    if path.lower().endswith(".gz"):
+        return gzip.open(path, "rt")
+    return open(path, "r")
+
+
 def _res_key(atom):
     """Residue identity: chain id plus seq id (seq id  carries any insertion code)"""
     return (atom.chainid, atom.seqid)
@@ -151,7 +163,7 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
     List of residues as Residue class with list of Atom classes within each residue.
     """
     residues = []
-    with open(file, 'r') as fh:
+    with _open_text(file) as fh:
         for line in fh:
             record = line[0:6].strip()
             # Only ATOM (always) and HETATM (when requested) carry atom info
@@ -190,7 +202,7 @@ def get_resi_from_cif(file, hetatm, hydrogens):
     icode = 999
     # Track column order within the _atom_site loop
     count = -1
-    with open(file, 'r') as fh:
+    with _open_text(file) as fh:
         for line in fh:
             count += 1
             # Reset the column counter at the start of a loop_
@@ -251,13 +263,36 @@ def load_residues(path, hetatm, hydrogens):
     """
     Dispatch to the correct structure parser based on the file extension.
 
+    A trailing .gz is stripped before the extension is examined and the file is decompressed on the fly
     """
     p = path.lower()
+    if p.endswith(".gz"):
+        p = p[:-len(".gz")]
     if p.endswith(".pdb") or p.endswith(".ent"):
         return get_resi_from_pdb(path, hetatm, hydrogens)
     if p.endswith(".cif") or p.endswith(".mmcif"):
         return get_resi_from_cif(path, hetatm, hydrogens)
     raise ValueError(f"Unrecognized structure extension: {path}")
+
+
+def load_residues_or_exit(path, hetatm, hydrogens):
+    """
+    load_residues() for command-line use.
+
+    Turns the errors a user can actually trigger - a missing file, a directory,
+    an unreadable file, an unknown extension, a corrupt gzip - into a short
+    message on stderr and exit status 1, instead of a traceback.
+    """
+    try:
+        return load_residues(path, hetatm, hydrogens)
+    except FileNotFoundError:
+        sys.exit("error: no such file: %s" % path)
+    except IsADirectoryError:
+        sys.exit("error: not a file: %s" % path)
+    except PermissionError:
+        sys.exit("error: cannot read: %s" % path)
+    except (OSError, ValueError) as exc:
+        sys.exit("error: %s: %s" % (path, exc))
 
 # Interchangeable atom-name pairs per residue type. Within each pair the two
 # atoms are equivalent, so swapping them is not a real movement: the
@@ -504,6 +539,12 @@ def classify_nucleotide_conformation(residues):
     return results
 
 
+def add_version_arg(parser):
+    """Add the shared --version flag, reporting the installed package version."""
+    parser.add_argument('--version', action='version',
+                        version='pdb_python_tools ' + __version__)
+
+
 def add_output_args(parser):
     """
     Add the shared output-formatting flags to an argparse parser so every
@@ -565,9 +606,24 @@ def write_table(header, rows, fmt="tsv", output=None, force=False,
         writer.writerow(list(header))
         for row in rows:
             writer.writerow([_format_cell(v, precision, full_precision) for v in row])
+    except BrokenPipeError:
+        _exit_on_broken_pipe()
     finally:
         if output is not None:
             handle.close()
+
+
+def _exit_on_broken_pipe():
+    """
+    Leave quietly after a broken pipe.
+
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except (OSError, ValueError):
+        pass
+    raise SystemExit(1)
 
 
 # Template for the generated Coot script. It is Python-2 compatible (Coot 0.9) 

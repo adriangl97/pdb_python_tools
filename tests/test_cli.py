@@ -2,7 +2,9 @@
 End-to-end tests for the command-line tools.
 
 """
+import gzip
 import math
+import shutil
 import subprocess
 import sys
 
@@ -121,6 +123,159 @@ def hybrid(tmp_path):
 
 ALL_TOOLS = ["atom_tracker", "find_contacts", "CA_difference",
              "nucleotide_conformation"]
+
+
+def run_piped(tool, args, head_lines=2):
+    """
+    Run a CLI with its stdout piped into `head -n`, which closes the pipe early.
+
+    Returns (tool_returncode, tool_stderr, lines_head_received).
+    """
+    head = subprocess.Popen(["head", "-n", str(head_lines)],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True)
+    tool_proc = subprocess.Popen(
+        [sys.executable, "-m", "pdb_python_tools." + tool] + [str(a) for a in args],
+        cwd=REPO_ROOT, stdout=head.stdin, stderr=subprocess.PIPE, text=True)
+    head.stdin.close()
+    out = head.stdout.read()
+    head.wait()
+    stderr = tool_proc.stderr.read()
+    tool_proc.stderr.close()
+    tool_proc.wait()
+    return tool_proc.returncode, stderr, out.splitlines()
+
+
+@pytest.fixture
+def many_rows(tmp_path):
+    """
+    A structure with enough residues that the output cannot fit in the pipe
+    buffer, so a reader closing early really does break the pipe mid-write.
+    """
+    lines = []
+    for i in range(1, 4001):
+        lines.append(pdb_atom_line(i, "CA", "GLY", "A", i, float(i), 0.0, 0.0))
+    return write_pdb(tmp_path / "many.pdb", lines)
+
+
+class TestBrokenPipe:
+    """
+    Piping into a reader that exits early (`| head`, quitting `less`) is normal
+    use and must not produce a traceback.
+    """
+
+    def test_output_is_large_enough_to_break_the_pipe(self, many_rows):
+        # Guards the fixture: a short output would fit in the pipe buffer and
+        # the test would pass without ever exercising the broken-pipe path
+        result = run_tool("nucleotide_conformation", many_rows, "-a")
+        rows = run_tool("CA_difference", many_rows, many_rows).stdout
+        assert len(rows) > 65536, "fixture too small to close the pipe mid-write"
+
+    def test_ca_difference_pipes_cleanly(self, many_rows):
+        code, stderr, lines = run_piped("CA_difference", [many_rows, many_rows])
+        assert "BrokenPipeError" not in stderr
+        assert "Traceback" not in stderr
+        assert "Exception ignored" not in stderr
+        assert len(lines) == 2
+
+    def test_atom_tracker_pipes_cleanly(self, many_rows):
+        code, stderr, lines = run_piped("atom_tracker", [many_rows, many_rows,
+                                                         "--min-change", "-1"])
+        assert "BrokenPipeError" not in stderr
+        assert "Traceback" not in stderr
+        assert len(lines) == 2
+
+    def test_nucleotide_conformation_pipes_cleanly(self, rna):
+        code, stderr, lines = run_piped("nucleotide_conformation", [rna, "-a"])
+        assert "BrokenPipeError" not in stderr
+        assert "Traceback" not in stderr
+
+    @needs_scipy
+    def test_find_contacts_pipes_cleanly(self, two_chains):
+        code, stderr, lines = run_piped("find_contacts",
+                                        [two_chains, "-c", "A", "-d", "4.0"])
+        assert "BrokenPipeError" not in stderr
+        assert "Traceback" not in stderr
+
+    def test_the_rows_that_did_arrive_are_correct(self, many_rows):
+        _, _, lines = run_piped("CA_difference", [many_rows, many_rows], head_lines=3)
+        assert lines[0].split("\t")[0] == "Chain1"
+        assert len(lines) == 3
+
+    def test_writing_to_a_file_is_unaffected(self, many_rows, tmp_path):
+        # The guard must not swallow anything when stdout is not a pipe
+        target = tmp_path / "out.tsv"
+        result = run_tool("CA_difference", many_rows, many_rows, "-o", target)
+        assert result.returncode == 0, result.stderr
+        assert len(target.read_text().splitlines()) == 4001
+
+
+class TestVersion:
+    @pytest.mark.parametrize("tool", ALL_TOOLS)
+    def test_version_flag(self, tool):
+        result = run_tool(tool, "--version")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("pdb_python_tools ")
+
+    def test_version_matches_the_package(self):
+        from pdb_python_tools import __version__
+        out = run_tool("atom_tracker", "--version").stdout.strip()
+        assert out == "pdb_python_tools " + __version__
+
+    @pytest.mark.parametrize("tool", ALL_TOOLS)
+    def test_version_needs_no_input_file(self, tool):
+        # --version must work before any positional argument is supplied
+        assert run_tool(tool, "--version").returncode == 0
+
+
+class TestErrorMessages:
+    """User-triggerable errors give a short message, not a traceback."""
+
+    @pytest.mark.parametrize("tool,args", [
+        ("atom_tracker", ["MISSING", "MISSING"]),
+        ("CA_difference", ["MISSING", "MISSING"]),
+        ("find_contacts", ["MISSING", "-c", "A", "-d", "4"]),
+        ("nucleotide_conformation", ["MISSING"]),
+    ])
+    def test_missing_file(self, tool, args, tmp_path):
+        missing = str(tmp_path / "nope.pdb")
+        result = run_tool(tool, *[missing if a == "MISSING" else a for a in args])
+        assert result.returncode == 1
+        assert "Traceback" not in result.stderr
+        assert "no such file" in result.stderr
+        assert missing in result.stderr
+
+    @pytest.mark.parametrize("tool,args", [
+        ("atom_tracker", ["BAD", "BAD"]),
+        ("nucleotide_conformation", ["BAD"]),
+    ])
+    def test_unknown_extension(self, tool, args, tmp_path):
+        bad = tmp_path / "structure.xyz"
+        bad.write_text("")
+        result = run_tool(tool, *[str(bad) if a == "BAD" else a for a in args])
+        assert result.returncode == 1
+        assert "Traceback" not in result.stderr
+        assert "Unrecognized structure extension" in result.stderr
+
+    def test_corrupt_gzip(self, tmp_path):
+        bad = tmp_path / "broken.cif.gz"
+        bad.write_text("not actually gzipped\n")
+        result = run_tool("nucleotide_conformation", bad)
+        assert result.returncode == 1
+        assert "Traceback" not in result.stderr
+        assert "error:" in result.stderr
+
+
+class TestGzipCli:
+    def test_gzipped_input_matches_plain(self, rna, tmp_path):
+        packed = tmp_path / "rna.pdb.gz"
+        with open(rna, "rb") as src, gzip.open(packed, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        plain_out = run_tool("nucleotide_conformation", rna, "-a")
+        packed_out = run_tool("nucleotide_conformation", packed, "-a")
+        assert packed_out.returncode == 0, packed_out.stderr
+        assert packed_out.stdout == plain_out.stdout
+        assert len(packed_out.stdout.splitlines()) == 3
 
 
 class TestHelp:

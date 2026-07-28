@@ -14,9 +14,10 @@ use -a/--all to list every nucleotide with its chi angle and conformation.
 """
 from .core import Atom
 from .core import Residue
-from .core import load_residues
+from .core import load_residues_or_exit
 from .core import classify_nucleotide_conformation
 from .core import add_output_args
+from .core import add_version_arg
 from .core import write_table
 from .core import write_coot_script
 from .core import _PYRIMIDINES
@@ -45,10 +46,11 @@ def main():
                              'as borderline; adds a Borderline column and, in the '
                              'default view, also lists borderline-anti pyrimidines '
                              '(default: 0, off)')
+    add_version_arg(parser)
     add_output_args(parser)
     args = parser.parse_args()
 
-    pdb = load_residues(args.pdb, False, False)
+    pdb = load_residues_or_exit(args.pdb, False, False)
 
     # chi + syn/anti call for every standard RNA/DNA nucleotide
     results = classify_nucleotide_conformation(pdb)

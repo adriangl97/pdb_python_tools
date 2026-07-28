@@ -10,9 +10,10 @@ sorted by CA/C1' distance, largest first.
 """
 from .core import Atom
 from .core import Residue
-from .core import load_residues
+from .core import load_residues_or_exit
 from .core import find_nearest_ca
 from .core import add_output_args
+from .core import add_version_arg
 from .core import write_table
 from .core import write_coot_script
 import argparse
@@ -30,12 +31,13 @@ def main():
     parser.add_argument('pdb2', help='second coordinate file (pdb/cif)')
     parser.add_argument('-HET', '--HETATM', action='store_true', dest='hetatm', help='include hetatms')
     parser.add_argument('-hy', '--hydrogens', action='store_true', dest='hydrogens', help='include hydrogens')
+    add_version_arg(parser)
     add_output_args(parser)
     args = parser.parse_args()
 
     # Parse both structures
-    pdb1 = load_residues(args.pdb1, args.hetatm, args.hydrogens)
-    pdb2 = load_residues(args.pdb2, args.hetatm, args.hydrogens)
+    pdb1 = load_residues_or_exit(args.pdb1, args.hetatm, args.hydrogens)
+    pdb2 = load_residues_or_exit(args.pdb2, args.hetatm, args.hydrogens)
 
     # Nearest CA/C1' in pdb2 for each residue of pdb1 (scipy cKDTree)
     results = find_nearest_ca(pdb1, pdb2)

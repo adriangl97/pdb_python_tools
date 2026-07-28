@@ -3,13 +3,16 @@ Tests for the PDB and mmCIF parsers and the extension-based dispatch.
 
 Both parsers are fed the same small structure (see the tiny_pdb / tiny_cif fixtures)
 """
+import gzip
+import os
 import shutil
 
 import pytest
 
 from pdb_python_tools.core import (_dequote, _element_from_pdb, _is_hydrogen,
                                    _safe_float, get_resi_from_cif,
-                                   get_resi_from_pdb, load_residues)
+                                   get_resi_from_pdb, load_residues,
+                                   load_residues_or_exit)
 
 from conftest import atom_names, by_key, pdb_atom_line, write_pdb
 
@@ -214,6 +217,107 @@ class TestCifParser:
             for a, b in zip(resi.atom_list, other.atom_list):
                 assert (a.x, a.y, a.z) == (b.x, b.y, b.z)
                 assert a.element == b.element
+
+
+class TestGzipInput:
+
+    def gzipped(self, path, tmp_path):
+        target = tmp_path / (os.path.basename(path) + ".gz")
+        with open(path, "rb") as src, gzip.open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return str(target)
+
+    def test_gzipped_pdb(self, tiny_pdb, tmp_path):
+        plain = get_resi_from_pdb(tiny_pdb, True, True)
+        packed = load_residues(self.gzipped(tiny_pdb, tmp_path), True, True)
+        assert by_key(packed).keys() == by_key(plain).keys()
+        assert atom_names(packed[0]) == atom_names(plain[0])
+
+    def test_gzipped_cif(self, tiny_cif, tmp_path):
+        plain = get_resi_from_cif(tiny_cif, True, True)
+        packed = load_residues(self.gzipped(tiny_cif, tmp_path), True, True)
+        assert by_key(packed).keys() == by_key(plain).keys()
+        assert atom_names(packed[0]) == atom_names(plain[0])
+
+    def test_gzipped_coordinates_are_identical(self, tiny_pdb, tmp_path):
+        plain = get_resi_from_pdb(tiny_pdb, True, True)
+        packed = load_residues(self.gzipped(tiny_pdb, tmp_path), True, True)
+        for r1, r2 in zip(plain, packed):
+            for a, b in zip(r1.atom_list, r2.atom_list):
+                assert (a.x, a.y, a.z) == (b.x, b.y, b.z)
+
+    @pytest.mark.parametrize("suffix", [".pdb.gz", ".ent.gz", ".cif.gz",
+                                        ".mmcif.gz", ".CIF.GZ"])
+    def test_extension_dispatch_ignores_the_gz_suffix(self, tiny_pdb, tiny_cif,
+                                                      tmp_path, suffix):
+        source = tiny_cif if "cif" in suffix.lower() else tiny_pdb
+        target = tmp_path / ("copy" + suffix)
+        with open(source, "rb") as src, gzip.open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        assert len(load_residues(str(target), False, False)) == 3
+
+    def test_corrupt_gzip_raises_oserror(self, tmp_path):
+        target = tmp_path / "broken.cif.gz"
+        target.write_text("ATOM   this is not gzipped at all\n")
+        with pytest.raises(OSError):
+            load_residues(str(target), False, False)
+
+    def test_gz_without_a_known_extension_is_rejected(self, tmp_path):
+        target = tmp_path / "structure.xyz.gz"
+        target.write_bytes(b"")
+        with pytest.raises(ValueError, match="Unrecognized structure extension"):
+            load_residues(str(target), False, False)
+
+
+class TestLoadResiduesOrExit:
+    """The CLI wrapper turns user-triggerable errors into clean exits."""
+
+    def test_returns_residues_on_success(self, tiny_pdb):
+        assert len(load_residues_or_exit(tiny_pdb, False, False)) == 3
+
+    def test_missing_file(self, tmp_path, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            load_residues_or_exit(str(tmp_path / "nope.pdb"), False, False)
+        assert "no such file" in str(excinfo.value)
+        assert "Traceback" not in str(excinfo.value)
+
+    def test_directory_instead_of_a_file(self, tmp_path):
+        with pytest.raises(SystemExit) as excinfo:
+            load_residues_or_exit(str(tmp_path), False, False)
+        # The extension check rejects a bare directory name first
+        assert "error:" in str(excinfo.value)
+
+    def test_directory_with_a_structure_extension(self, tmp_path):
+        target = tmp_path / "looks_like.pdb"
+        target.mkdir()
+        with pytest.raises(SystemExit) as excinfo:
+            load_residues_or_exit(str(target), False, False)
+        assert "error:" in str(excinfo.value)
+
+    def test_unknown_extension(self, tmp_path):
+        target = tmp_path / "structure.xyz"
+        target.write_text("")
+        with pytest.raises(SystemExit) as excinfo:
+            load_residues_or_exit(str(target), False, False)
+        assert "Unrecognized structure extension" in str(excinfo.value)
+
+    def test_corrupt_gzip(self, tmp_path):
+        target = tmp_path / "broken.cif.gz"
+        target.write_text("not gzipped\n")
+        with pytest.raises(SystemExit) as excinfo:
+            load_residues_or_exit(str(target), False, False)
+        assert "error:" in str(excinfo.value)
+
+    def test_unreadable_file(self, tiny_pdb):
+        os.chmod(tiny_pdb, 0o000)
+        try:
+            if os.access(tiny_pdb, os.R_OK):
+                pytest.skip("running as a user that ignores file permissions")
+            with pytest.raises(SystemExit) as excinfo:
+                load_residues_or_exit(tiny_pdb, False, False)
+            assert "cannot read" in str(excinfo.value)
+        finally:
+            os.chmod(tiny_pdb, 0o644)
 
 
 class TestLoadResidues:

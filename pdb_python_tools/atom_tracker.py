@@ -9,9 +9,10 @@ be aligned beforehand (e.g. in ChimeraX) if they do not come from the same refin
 """
 from .core import Atom
 from .core import Residue
-from .core import load_residues
+from .core import load_residues_or_exit
 from .core import compare_pdb_resi_xyz
 from .core import add_output_args
+from .core import add_version_arg
 from .core import write_table
 from .core import write_coot_script
 import argparse
@@ -29,12 +30,13 @@ def main():
     parser.add_argument('-hy', '--hydrogens', action='store_true', dest='hydrogens', help='include hydrogens')
     parser.add_argument('--min-change', type=float, default=0.01, dest='min_change',
                         help='only report residues whose maximum displacement exceeds this value (default: 0.01)')
+    add_version_arg(parser)
     add_output_args(parser)
     args = parser.parse_args()
 
     # Parse both structures with the appropriate parser
-    pdb1 = load_residues(args.pdb1, args.hetatm, args.hydrogens)
-    pdb2 = load_residues(args.pdb2, args.hetatm, args.hydrogens)
+    pdb1 = load_residues_or_exit(args.pdb1, args.hetatm, args.hydrogens)
+    pdb2 = load_residues_or_exit(args.pdb2, args.hetatm, args.hydrogens)
 
     # Compare both structures
     compare_pdb_resi_xyz(pdb1, pdb2)
