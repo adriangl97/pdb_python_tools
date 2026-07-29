@@ -91,21 +91,30 @@ def two_chains(tmp_path):
     ])
 
 
-def nucleotide_lines(serial, restyp, chain, resseq, chi_deg, z_offset=0.0):
+def nucleotide_lines(serial, restyp, chain, resseq, chi_deg, z_offset=0.0,
+                     record="ATOM", purine=None, bond=1.0, base=None):
     """
-    Four ATOM records for one nucleotide with an exact glycosidic chi.
+    Four records for one nucleotide with an exact glycosidic chi.
 
-    Purines are measured O4'-C1'-N9-C4 and pyrimidines O4'-C1'-N1-C2; placing
-    the fourth atom at (1, cos t, sin t) makes chi exactly t degrees.
+    Purines are measured O4'-C1'-N9-C4, pyrimidines O4'-C1'-N1-C2 and
+    C-glycosides such as pseudouridine O4'-C1'-C5-C4; placing the fourth atom at
+    (bond, cos t, sin t) makes chi exactly t degrees.  `base` names the two base atoms outright, `purine` defaults to the
+    standard residue names, and `bond` stretches the C1'-base distance, for a base that is not attached to the sugar.
     """
-    base = ("N9", "C4") if restyp in ("A", "G", "DA", "DG") else ("N1", "C2")
+    if base is None:
+        if purine is None:
+            purine = restyp in ("A", "G", "DA", "DG", "1MG", "2MA", "G7M", "MA6")
+        base = ("N9", "C4") if purine else ("N1", "C2")
     t = math.radians(chi_deg)
     return [
-        pdb_atom_line(serial, "O4'", restyp, chain, resseq, 0.0, 1.0, z_offset),
-        pdb_atom_line(serial + 1, "C1'", restyp, chain, resseq, 0.0, 0.0, z_offset),
-        pdb_atom_line(serial + 2, base[0], restyp, chain, resseq, 1.0, 0.0, z_offset),
+        pdb_atom_line(serial, "O4'", restyp, chain, resseq, 0.0, 1.0, z_offset,
+                      record=record),
+        pdb_atom_line(serial + 1, "C1'", restyp, chain, resseq, 0.0, 0.0, z_offset,
+                      record=record),
+        pdb_atom_line(serial + 2, base[0], restyp, chain, resseq, bond, 0.0, z_offset,
+                      record=record),
         pdb_atom_line(serial + 3, base[1], restyp, chain, resseq,
-                      1.0, math.cos(t), z_offset + math.sin(t)),
+                      bond, math.cos(t), z_offset + math.sin(t), record=record),
     ]
 
 
@@ -647,3 +656,78 @@ class TestNucleotideConformation:
         content = target.read_text()
         compile(content, str(target), "exec")
         assert "alt A" in content and "alt B" in content
+
+    @pytest.fixture
+    def modified_rna(self, tmp_path):
+        """
+        An RNA strand of HETATM residues: a syn modified pyrimidine (5MU), an
+        anti modified purine (1MG) carrying the N1/C2 of a purine, a syn
+        pseudouridine joined through C5 with its N1 3.8 A from the C1', and a
+        ligand that reuses the base atom names but has no sugar.
+        """
+        lines = []
+        lines += nucleotide_lines(1, "5MU", "A", 1, 40.0, z_offset=0.0,
+                                  record="HETATM")
+        lines += [pdb_atom_line(90, "N3", "5MU", "A", 1, 50.0, 50.0, 50.0,
+                                record="HETATM")]
+        lines += nucleotide_lines(5, "1MG", "A", 2, 170.0, z_offset=20.0,
+                                  record="HETATM")
+        # The N1/C2 of the purine's six-membered ring, well away from the sugar
+        lines += [pdb_atom_line(91, "N1", "1MG", "A", 2, 50.0, 50.0, 50.0,
+                                record="HETATM"),
+                  pdb_atom_line(92, "C2", "1MG", "A", 2, 60.0, 60.0, 60.0,
+                                record="HETATM")]
+        lines += nucleotide_lines(9, "PSU", "A", 3, 50.0, z_offset=40.0,
+                                  record="HETATM", base=("C5", "C4"))
+        # The N1 across the ring: named like a pyrimidine's, but not bonded
+        lines += [pdb_atom_line(93, "N1", "PSU", "A", 3, 3.8, 0.0, 40.0,
+                                record="HETATM"),
+                  pdb_atom_line(94, "C2", "PSU", "A", 3, 3.8, 1.0, 40.0,
+                                record="HETATM")]
+        lines += [pdb_atom_line(13, "N1", "LIG", "A", 4, 0.0, 0.0, 60.0,
+                                record="HETATM"),
+                  pdb_atom_line(14, "C2", "LIG", "A", 4, 1.0, 0.0, 60.0,
+                                record="HETATM")]
+        return write_pdb(tmp_path / "modified.pdb", lines)
+
+    def test_modified_nucleotides_are_measured(self, modified_rna):
+        result = run_tool("nucleotide_conformation", modified_rna, "-a")
+        assert result.returncode == 0, result.stderr
+        rows = [line.split("\t") for line in result.stdout.splitlines()[1:]]
+        assert [(r[2], r[4]) for r in rows] == [("5MU", "syn"), ("1MG", "anti"),
+                                                ("PSU", "syn")]
+        assert [float(r[3]) for r in rows] == [pytest.approx(40.0, abs=0.1),
+                                               pytest.approx(170.0, abs=0.1),
+                                               pytest.approx(50.0, abs=0.1)]
+
+    def test_modified_pyrimidine_shows_in_the_default_view(self, modified_rna):
+        rows = run_tool("nucleotide_conformation",
+                        modified_rna).stdout.splitlines()[1:]
+        # The pseudouridine counts as a pyrimidine, so a syn one is flagged too
+        assert [r.split("\t")[2] for r in rows] == ["5MU", "PSU"]
+
+    def test_c_glycoside_uses_the_c5_torsion(self, tmp_path):
+        """
+        A pseudouridine whose C5 torsion is anti and whose N1 torsion is syn:
+        only the C5 one is chi, so it must not be flagged in the default view.
+        """
+        lines = nucleotide_lines(1, "PSU", "A", 1, 150.0, record="HETATM",
+                                 base=("C5", "C4"))
+        lines += [pdb_atom_line(5, "N1", "PSU", "A", 1, 3.8, 0.0, 0.0,
+                                record="HETATM"),
+                  pdb_atom_line(6, "C2", "PSU", "A", 1, 3.8, 1.0, 0.0,
+                                record="HETATM")]
+        psu = write_pdb(tmp_path / "psu.pdb", lines)
+        rows = run_tool("nucleotide_conformation", psu, "-a").stdout.splitlines()[1:]
+        assert len(rows) == 1
+        assert rows[0].split("\t")[4] == "anti"
+        assert float(rows[0].split("\t")[3]) == pytest.approx(150.0, abs=0.1)
+        assert run_tool("nucleotide_conformation", psu).stdout.splitlines()[1:] == []
+
+    def test_modified_purine_only_shows_in_the_syn_view(self, tmp_path):
+        syn_purine = write_pdb(tmp_path / "syn1mg.pdb",
+                               nucleotide_lines(1, "1MG", "A", 1, 60.0,
+                                                record="HETATM"))
+        rows = run_tool("nucleotide_conformation", syn_purine, "-s").stdout.splitlines()[1:]
+        assert [r.split("\t")[2] for r in rows] == ["1MG"]
+        assert run_tool("nucleotide_conformation", syn_purine).stdout.splitlines()[1:] == []

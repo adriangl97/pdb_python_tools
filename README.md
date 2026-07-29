@@ -1,6 +1,6 @@
 # pdb_python_tools
 
-Small command-line tools for analyzing and comparing PDB/mmCIF structures, useful during modeling or structural analysis. Every tool reads `.pdb`/`.ent`, `.cif`/`.mmcif` and Gzipped files with a hand-written parser (no external structure library), writes a tab- or comma-separated table to stdout (or a file with `-o`), and has a `-h/--help` describing its flags.
+Small command-line tools for analyzing and comparing PDB/mmCIF structures, useful during modeling or structural analysis. Every tool reads `.pdb`/`.ent`, `.cif`/`.mmcif` and Gzipped files, writes a tab- or comma-separated table to stdout (or a file with `-o`), and has a `-h/--help` describing its flags.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ pip install .
 | `pdb_python_tools.atom_tracker` | Per-residue/atom coordinate change between two **equivalent** structures | `pdb_python_tools.atom_tracker a.cif b.cif` |
 | `pdb_python_tools.find_contacts` | Inter-chain atom contacts for a chosen chain within a cutoff | `pdb_python_tools.find_contacts a.cif -c 4 -d 4.5` |
 | `pdb_python_tools.CA_difference` | Nearest CA/C1' distance in a second structure for every residue (structures **do not need** to be equivalent) | `pdb_python_tools.CA_difference a.cif b.cif` |
-| `pdb_python_tools.nucleotide_conformation` | Glycosidic syn/anti conformation of RNA and DNA nucleotides, flags unlikely syn pyrimidines (C, U, DC, DT, DU) | `pdb_python_tools.nucleotide_conformation a.cif` |
+| `pdb_python_tools.nucleotide_conformation` | Glycosidic syn/anti conformation of RNA and DNA nucleotides, including modified ones, flags syn pyrimidines (C, U, DC, DT, DU) | `pdb_python_tools.nucleotide_conformation a.cif` |
 
 ### Shared flags
 
@@ -122,7 +122,7 @@ Showing just the top three above
 
 ### pdb_python_tools.nucleotide_conformation
 
-Classify every standard RNA (A, C, G, U) and DNA (DA, DC, DG, DT, DU) nucleotide as *syn* or *anti* from the glycosidic torsion angle χ (measured O4'-C1'-N1-C2 for pyrimidines, O4'-C1'-N9-C4 for purines) and report the unlikely cases, pyrimidines, modeled in the *syn* conformation:
+Classify every RNA (A, C, G, U) and DNA (DA, DC, DG, DT, DU) nucleotide, including modified ones, as *syn* or *anti* from the glycosidic torsion angle χ (measured O4'-C1'-N1-C2 for pyrimidines, O4'-C1'-N9-C4 for purines and O4'-C1'-C5-C4 for C-glycosides such as pseudouridine) and, by default, report the *syn* pyrimidines:
 
 ```bash
 pdb_python_tools.nucleotide_conformation test_files/6ouo_aligned.cif
@@ -139,7 +139,7 @@ Showing just the top three above.
 
 A nucleotide is called *syn* when χ is in `[-90°, +90°]` and *anti* otherwise. Three views are available (`-s` and `-a` are mutually exclusive):
 
-- *default* — only syn pyrimidines (C, U, DC, DT, DU), the unlikely cases.
+- *default* — only syn pyrimidines (C, U, DC, DT, DU)
 - `-s/--syn` — every syn nucleotide, purines (A, G, DA, DG) included, and no anti ones.
 - `-a/--all` — every nucleotide with its χ angle and conformation.
 

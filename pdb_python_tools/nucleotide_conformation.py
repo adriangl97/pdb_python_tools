@@ -2,10 +2,15 @@
 """
 nucleotide_conformation.py: syn/anti glycosidic conformation of nucleotides.
 
-Compute the glycosidic torsion angle chi for every standard RNA or DNA
-nucleotide and classify it as syn or anti (syn when chi is in [-90, +90]
-degrees). chi is measured O4'-C1'-N1-C2 for pyrimidines (C, U, DC, DT, DU) and
-O4'-C1'-N9-C4 for purines (A, G, DA, DG).
+Compute the glycosidic torsion angle chi for every RNA or DNA nucleotide and
+classify it as syn or anti (syn when chi is in [-90, +90] degrees). chi is
+measured O4'-C1'-N1-C2 for pyrimidines (C, U, DC, DT, DU) and O4'-C1'-N9-C4 for
+purines (A, G, DA, DG).
+
+Modified nucleotides written as HETATM are included as long as they keep the
+standard atom names. Which atoms chi is measured on follows from the atom that
+is bonded to the C1': N9 for a purine, N1 for a pyrimidine, and C5 for a C-glycoside
+such as pseudouridine, whose chi therefore runs O4'-C1'-C5-C4.
 
 By default only pyrimidines in the syn conformation are reported, since a syn
 pyrimidine is unusual and often points to a modeling error.
@@ -18,7 +23,7 @@ from .core import add_output_args
 from .core import add_version_arg
 from .core import write_table
 from .core import write_coot_script
-from .core import _PYRIMIDINES
+from .core import is_pyrimidine
 import argparse
 import sys
 
@@ -26,9 +31,9 @@ import sys
 def main():
     parser = argparse.ArgumentParser(
         prog='nucleotide_conformation.py',
-        description='Classify RNA and DNA nucleotides as syn or anti from the '
-                    'glycosidic torsion chi and flag unlikely syn pyrimidines '
-                    '(C, U, DC, DT, DU)',
+        description='Classify RNA and DNA nucleotides, including modified ones, '
+                    'as syn or anti from the glycosidic torsion chi and flag '
+                    'unlikely syn pyrimidines (C, U, DC, DT, DU)',
         epilog='Usage: pdb/cif -arguments')
     parser.add_argument('pdb', help='coordinate file (pdb/cif)')
     # The three views are alternatives: default (syn pyrimidines), -s, -a
@@ -48,9 +53,10 @@ def main():
     add_output_args(parser)
     args = parser.parse_args()
 
-    pdb = load_residues_or_exit(args.pdb, False, False)
+    # HETATM records are read too, so modified nucleotides are covered
+    pdb = load_residues_or_exit(args.pdb, True, False)
 
-    # chi + syn/anti call for every standard RNA/DNA nucleotide
+    # chi + syn/anti call for every RNA/DNA nucleotide
     results = classify_nucleotide_conformation(pdb)
 
     use_margin = args.margin > 0
@@ -66,10 +72,10 @@ def main():
         selected = [r for r in results
                     if r[2] == "syn" or is_borderline(r[1])]
     else:
-        # Unlikely cases: syn pyrimidines, plus borderline-anti pyrimidines that
-        # sit close enough to the boundary to plausibly be syn
+        # Syn pyrimidines, plus borderline-anti pyrimidines that
+        # sit close enough to the boundary
         selected = [r for r in results
-                    if r[0].restyp in _PYRIMIDINES and (r[2] == "syn" or is_borderline(r[1]))]
+                    if is_pyrimidine(r[0]) and (r[2] == "syn" or is_borderline(r[1]))]
 
     # A nucleotide modelled in alternate conformations gives one row per
     # conformation, so the id is shown to tell those rows apart. The column is

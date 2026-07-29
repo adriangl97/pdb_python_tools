@@ -640,6 +640,19 @@ _PURINES = _RNA_PURINES | _DNA_PURINES
 _PYRIMIDINES = _RNA_PYRIMIDINES | _DNA_PYRIMIDINES
 _NUCLEOTIDES = _PURINES | _PYRIMIDINES
 
+# The four atoms chi is measured on, per base type
+_PURINE_CHI = ("O4'", "C1'", "N9", "C4")
+_PYRIMIDINE_CHI = ("O4'", "C1'", "N1", "C2")
+# Pseudouridine and its derivatives are C-glycosides:
+_C_GLYCOSIDE_CHI = ("O4'", "C1'", "C5", "C4")
+# Tried in this order against the atoms a non-standard residue actually has
+_CHI_TEMPLATES = (_PURINE_CHI, _PYRIMIDINE_CHI, _C_GLYCOSIDE_CHI)
+_PYRIMIDINE_TEMPLATES = (_PYRIMIDINE_CHI, _C_GLYCOSIDE_CHI)
+# Longest bond to the sugar accepted when deciding whether a residue that is not
+# a standard nucleotide really is one, and which of its atoms carries the base.
+# The bond is ~1.47 A, so anything past this is not the glycosidic one.
+_MAX_GLYCOSIDIC_BOND = 1.8
+
 
 def _dihedral(p0, p1, p2, p3):
     """
@@ -659,14 +672,66 @@ def _dihedral(p0, p1, p2, p3):
     return math.degrees(math.atan2(y, x))
 
 
+def _bonded(p0, p1):
+    """True when two points are within glycosidic bonding distance."""
+    return math.dist(p0, p1) <= _MAX_GLYCOSIDIC_BOND
+
+
+def nucleotide_chi_atoms(resi):
+    """
+    The four atom names chi is measured on for a residue, or None when the
+    residue is not a nucleotide.
+
+    Standard RNA/DNA residues are recognised by name. Anything else (a modified
+    or otherwise non-standard nucleotide, usually read from HETATM records) is
+    recognised from its own atoms instead: it must carry the sugar atoms
+    O4'/C1', and the base type is the one whose glycosidic atom is bonded
+    to the C1', N9 for a purine, N1 for a pyrimidine and C5 for a C-glycoside
+    such as pseudouridine.
+
+    Inputs
+    ------
+    resi : Residue (class)
+
+    Returns
+    -------
+    (O4', C1', glycosidic atom, next base atom) atom names, or None
+    """
+    if resi.restyp in _PURINES:
+        return _PURINE_CHI
+    if resi.restyp in _PYRIMIDINES:
+        return _PYRIMIDINE_CHI
+    coords = {}
+    for atom in resi.atom_list:
+        coords.setdefault(atom.altid, (atom.x, atom.y, atom.z))
+    if not {"O4'", "C1'"} <= set(coords):
+        return None
+    for names in _CHI_TEMPLATES:
+        if (set(names) <= set(coords)
+                and _bonded(coords["C1'"], coords[names[2]])):
+            return names
+    return None
+
+
+def is_pyrimidine(resi):
+    """
+    True when chi is measured on a pyrimidine base for this residue,
+    C-glycosides such as pseudouridine included.
+    """
+    return nucleotide_chi_atoms(resi) in _PYRIMIDINE_TEMPLATES
+
+
 def classify_nucleotide_conformation(residues):
     """
-    Compute the glycosidic torsion angle chi for every standard RNA or DNA
-    nucleotide and classify it as syn or anti.
+    Compute the glycosidic torsion angle chi for every RNA or DNA nucleotide and
+    classify it as syn or anti.
 
     chi is measured O4'-C1'-N1-C2 for pyrimidines (C, U, DC, DT, DU) and
     O4'-C1'-N9-C4 for purines (A, G, DA, DG). A nucleotide is 'syn' when chi
     lies in [-90, +90] degrees and 'anti' otherwise.
+
+    Modified nucleotides that keep the standard atom names are measured too, and a
+    non-nucleotide that happens to reuse the names is not mistaken for a base.
 
     Inputs
     ------
@@ -677,19 +742,16 @@ def classify_nucleotide_conformation(residues):
 
     Returns
     -------
-    List of (residue, chi, conformation, altloc) for every standard nucleotide
-    that has all four chi atoms, where altloc is the alternate conformation id
-    ("" when the residue has none).
+    List of (residue, chi, conformation, altloc) for every nucleotide that has
+    all four chi atoms, where altloc is the alternate conformation id ("" when
+    the residue has none).
     """
     results = []
     for resi in residues:
-        if resi.restyp not in _NUCLEOTIDES:
+        # Chi atom names
+        names = nucleotide_chi_atoms(resi)
+        if names is None:
             continue
-        # Chi atom names, base atom (3rd/4th) depends on purine vs pyrimidine
-        if resi.restyp in _PURINES:
-            names = ("O4'", "C1'", "N9", "C4")
-        else:
-            names = ("O4'", "C1'", "N1", "C2")
         # Split the chi atoms by conformation. Atoms with no alternate id are
         # shared, so they seed every conformation's set.
         shared = {}
@@ -710,6 +772,9 @@ def classify_nucleotide_conformation(residues):
         for alt, coords in groups:
             # Skip a conformation that is missing any of the four atoms
             if len(coords) != 4:
+                continue
+            if (resi.restyp not in _NUCLEOTIDES
+                    and not _bonded(coords[names[1]], coords[names[2]])):
                 continue
             chi = _dihedral(coords[names[0]], coords[names[1]],
                             coords[names[2]], coords[names[3]])
