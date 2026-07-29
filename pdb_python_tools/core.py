@@ -783,6 +783,55 @@ def classify_nucleotide_conformation(residues):
     return results
 
 
+# The base groups the syn/anti counts are reported for, in reporting order.
+# "nucleotides" is the total, so every measured residue counts towards it as
+# well as towards its own group.
+CONFORMATION_GROUPS = ("pyrimidines", "purines", "nucleotides")
+
+
+def count_nucleotide_conformations(results, is_borderline=None):
+    """
+    Count, per base group, how many measured nucleotides came out syn.
+
+    Counting follows the same rule as the table: a nucleotide modelled in more
+    than one conformation is counted once per conformation, and C-glycosides
+    such as pseudouridine count as pyrimidines.
+
+    Inputs
+    ------
+    results : list of (residue, chi, conformation, altloc), as returned by
+        classify_nucleotide_conformation
+    is_borderline : callable taking chi and returning True when the angle sits
+        close to the syn/anti boundary, or None to skip the borderline count
+
+    Returns
+    -------
+    dict keyed by CONFORMATION_GROUPS, each holding a (syn, borderline, total)
+    tuple of counts
+    """
+    counts = {name: [0, 0, 0] for name in CONFORMATION_GROUPS}
+    for resi, chi, conformation, _ in results:
+        group = "pyrimidines" if is_pyrimidine(resi) else "purines"
+        for name in (group, "nucleotides"):
+            counts[name][2] += 1
+            if conformation == "syn":
+                counts[name][0] += 1
+            if is_borderline is not None and is_borderline(chi):
+                counts[name][1] += 1
+    return {name: tuple(values) for name, values in counts.items()}
+
+
+def format_percentage(count, total, precision=2, full_precision=False):
+    """
+    "count/total (pct%)" as a single string, following the same rounding rules
+    as the table cells. An empty total has no percentage, so it prints as NA.
+    """
+    if total == 0:
+        return "%d/%d (NA)" % (count, total)
+    pct = _format_cell(100.0 * count / total, precision, full_precision)
+    return "%d/%d (%s%%)" % (count, total, pct)
+
+
 def add_version_arg(parser):
     """Add the shared --version flag, reporting the installed package version."""
     parser.add_argument('--version', action='version',
@@ -826,7 +875,7 @@ def _format_cell(value, precision, full_precision):
     return str(value)
 
 def write_table(header, rows, fmt="tsv", output=None, force=False,
-                precision=2, full_precision=False):
+                precision=2, full_precision=False, comments=()):
     """
     Write a table (header + rows) as TSV or CSV to stdout or a file.
 
@@ -842,6 +891,7 @@ def write_table(header, rows, fmt="tsv", output=None, force=False,
     force : allow overwriting an existing output file
     precision : decimal places for float cells (negative -> raw)
     full_precision : if True, never round float cells
+    comments : lines written above the header, each prefixed with "# "
     """
     fmt = fmt.lower()
     if fmt not in ("tsv", "csv"):
@@ -851,6 +901,8 @@ def write_table(header, rows, fmt="tsv", output=None, force=False,
         raise FileExistsError(f"Refusing to overwrite existing file: {output} (use --force)")
     handle = open(output, "w", newline="") if output is not None else sys.stdout
     try:
+        for comment in comments:
+            handle.write("# %s\n" % comment)
         writer = csv.writer(handle, delimiter=delimiter, lineterminator="\n")
         writer.writerow(list(header))
         for row in rows:

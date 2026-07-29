@@ -5,9 +5,12 @@ import math
 
 import pytest
 
-from pdb_python_tools.core import (_NUCLEOTIDES, _PURINES, _PYRIMIDINES,
-                                   _dihedral, classify_nucleotide_conformation,
-                                   is_pyrimidine, nucleotide_chi_atoms)
+from pdb_python_tools.core import (CONFORMATION_GROUPS, _NUCLEOTIDES, _PURINES,
+                                   _PYRIMIDINES, _dihedral,
+                                   classify_nucleotide_conformation,
+                                   count_nucleotide_conformations,
+                                   format_percentage, is_pyrimidine,
+                                   nucleotide_chi_atoms)
 
 from conftest import make_atom, make_residue
 
@@ -487,3 +490,74 @@ class TestCGlycosides:
         results = classify_nucleotide_conformation(residues)
         assert [(r[0].restyp, round(r[1], 6)) for r in results] == [
             ("U", 0.0), ("PSU", 40.0), ("1MG", 170.0)]
+
+
+class TestCountNucleotideConformations:
+    """The syn counts reported alongside the table, per base group."""
+
+    @pytest.fixture
+    def mixed(self):
+        """Two syn and one anti pyrimidine, one syn and three anti purines."""
+        residues = [nucleotide("U", 0.0, seqid="1"),
+                    nucleotide("DC", 45.0, seqid="2"),
+                    nucleotide("C", 170.0, seqid="3"),
+                    nucleotide("G", 60.0, seqid="4"),
+                    nucleotide("A", -175.0, seqid="5"),
+                    nucleotide("DA", 120.0, seqid="6"),
+                    nucleotide("DG", -100.0, seqid="7")]
+        return classify_nucleotide_conformation(residues)
+
+    def test_counts_per_group(self, mixed):
+        counts = count_nucleotide_conformations(mixed)
+        assert counts["pyrimidines"] == (2, 0, 3)
+        assert counts["purines"] == (1, 0, 4)
+
+    def test_the_total_is_the_sum_of_both_groups(self, mixed):
+        counts = count_nucleotide_conformations(mixed)
+        assert counts["nucleotides"] == (3, 0, 7)
+
+    def test_c_glycosides_count_as_pyrimidines(self):
+        results = classify_nucleotide_conformation([c_glycoside("PSU", 40.0)])
+        counts = count_nucleotide_conformations(results)
+        assert counts["pyrimidines"] == (1, 0, 1)
+        assert counts["purines"] == (0, 0, 0)
+
+    def test_modified_bases_are_counted(self):
+        results = classify_nucleotide_conformation(
+            [modified("5MU", 40.0, PYRIMIDINE_NAMES),
+             modified("1MG", 170.0, PURINE_NAMES)])
+        counts = count_nucleotide_conformations(results)
+        assert (counts["pyrimidines"], counts["purines"]) == ((1, 0, 1), (0, 0, 1))
+
+    def test_each_alternate_conformation_is_counted(self):
+        atoms = base_atoms(PYRIMIDINE_NAMES, 0.0)[:3]
+        for alt, chi in (("A", 30.0), ("B", 150.0)):
+            _, y, z = fourth_point(chi)
+            atoms.append(make_atom("C2", 1.0, y, z, altloc=alt))
+        results = classify_nucleotide_conformation([make_residue("U", atoms)])
+        assert count_nucleotide_conformations(results)["pyrimidines"] == (1, 0, 2)
+
+    def test_borderline_counts_need_a_predicate(self, mixed):
+        borderline = count_nucleotide_conformations(
+            mixed, lambda chi: min(abs(chi - 90), abs(chi + 90)) <= 15)
+        # chi = -100 (DG) and chi = 120 is not within 15 of either boundary
+        assert borderline["purines"] == (1, 1, 4)
+        assert borderline["pyrimidines"] == (2, 0, 3)
+
+    def test_empty_input_counts_zero(self):
+        counts = count_nucleotide_conformations([])
+        assert all(counts[group] == (0, 0, 0) for group in CONFORMATION_GROUPS)
+
+
+class TestFormatPercentage:
+    def test_count_and_percentage(self):
+        assert format_percentage(1, 4) == "1/4 (25.00%)"
+
+    def test_precision_is_respected(self):
+        assert format_percentage(1, 3, precision=1) == "1/3 (33.3%)"
+
+    def test_full_precision(self):
+        assert format_percentage(1, 4, full_precision=True) == "1/4 (25.0%)"
+
+    def test_no_percentage_without_any_nucleotide(self):
+        assert format_percentage(0, 0) == "0/0 (NA)"

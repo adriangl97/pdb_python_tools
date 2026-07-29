@@ -16,6 +16,11 @@ By default only pyrimidines in the syn conformation are reported, since a syn
 pyrimidine is unusual and often points to a modeling error.
 Use -s/--syn to list every syn nucleotide, purines included, and no anti ones
 use -a/--all to list every nucleotide with its chi angle and conformation.
+
+How many nucleotides came out syn is reported, as comment lines ('#')
+above the table. The counts follow the view: the default view counts syn
+pyrimidines out of every pyrimidine, while -s and -a also count purines and all
+nucleotides.
 """
 from .core import load_residues_or_exit
 from .core import classify_nucleotide_conformation
@@ -24,6 +29,9 @@ from .core import add_version_arg
 from .core import write_table
 from .core import write_coot_script
 from .core import is_pyrimidine
+from .core import count_nucleotide_conformations
+from .core import format_percentage
+from .core import CONFORMATION_GROUPS
 import argparse
 import sys
 
@@ -103,15 +111,46 @@ def main():
     if use_margin:
         header.append("Borderline")
 
+    # The default view only deals with pyrimidines, so only those are counted;
+    # -s and -a cover every base, so purines and the overall figure are
+    # reported too
+    groups = CONFORMATION_GROUPS if (args.all or args.syn) else ("pyrimidines",)
+    stats = stats_comments(results, groups, is_borderline if use_margin else None,
+                           args.precision, args.full_precision)
+
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
-                    precision=args.precision, full_precision=args.full_precision)
+                    precision=args.precision, full_precision=args.full_precision,
+                    comments=stats)
         if args.coot:
             write_coot_script(markers, "nucleotide_conformation: glycosidic chi", args.coot,
                               force=args.force, precision=args.precision,
                               full_precision=args.full_precision)
     except FileExistsError as e:
         sys.exit(str(e))
+
+
+def stats_comments(results, groups, is_borderline, precision, full_precision):
+    """
+    The syn counts for `groups`, as the comment lines written above the table.
+
+    Every measured nucleotide is counted, including those the chosen view does
+    not list, so the counts describe the structure and not the table. A
+    borderline count is added per group when -m/--margin is in use
+    """
+    counts = count_nucleotide_conformations(results, is_borderline)
+
+    def line(label, count, total):
+        return "%s: %s" % (label, format_percentage(count, total, precision,
+                                                    full_precision))
+
+    lines = []
+    for group in groups:
+        syn, borderline, total = counts[group]
+        lines.append(line("Syn " + group, syn, total))
+        if is_borderline is not None:
+            lines.append(line("Borderline " + group, borderline, total))
+    return lines
 
 
 if __name__ == "__main__":

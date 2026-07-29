@@ -28,6 +28,19 @@ def run_tool(tool, *args):
         cwd=REPO_ROOT, capture_output=True, text=True)
 
 
+def table_lines(text):
+    """
+    The table itself: the output with the leading '#' comment rows dropped, so
+    the header is first and the data rows follow.
+    """
+    return [line for line in text.splitlines() if not line.startswith("#")]
+
+
+def comment_lines(text):
+    """The leading '#' comment rows, with the '# ' prefix stripped."""
+    return [line[2:] for line in text.splitlines() if line.startswith("#")]
+
+
 @pytest.fixture
 def pair(tmp_path):
     """
@@ -314,7 +327,7 @@ class TestGzipCli:
         packed_out = run_tool("nucleotide_conformation", packed, "-a")
         assert packed_out.returncode == 0, packed_out.stderr
         assert packed_out.stdout == plain_out.stdout
-        assert len(packed_out.stdout.splitlines()) == 3
+        assert len(table_lines(packed_out.stdout)) == 3
 
 
 class TestHelp:
@@ -522,7 +535,7 @@ class TestNucleotideConformation:
     def test_default_view_lists_syn_pyrimidines(self, rna):
         result = run_tool("nucleotide_conformation", rna)
         assert result.returncode == 0, result.stderr
-        lines = result.stdout.splitlines()
+        lines = table_lines(result.stdout)
         assert lines[0].split("\t") == ["Chain", "Residue", "Residue name",
                                         "Chi", "Conformation"]
         assert len(lines) == 2
@@ -533,42 +546,44 @@ class TestNucleotideConformation:
 
     def test_all_view_lists_every_nucleotide(self, rna):
         result = run_tool("nucleotide_conformation", rna, "-a")
-        assert len(result.stdout.splitlines()) == 3
+        assert len(table_lines(result.stdout)) == 3
 
     def test_syn_view(self, rna):
         result = run_tool("nucleotide_conformation", rna, "-s")
-        assert len(result.stdout.splitlines()) == 2
+        assert len(table_lines(result.stdout)) == 2
 
     def test_dna_default_view_lists_syn_pyrimidines(self, dna):
         result = run_tool("nucleotide_conformation", dna)
         assert result.returncode == 0, result.stderr
-        rows = [line.split("\t") for line in result.stdout.splitlines()[1:]]
+        rows = [line.split("\t") for line in table_lines(result.stdout)[1:]]
         assert [(r[2], r[3], r[4]) for r in rows] == [("DT", "0.00", "syn"),
                                                       ("DC", "45.00", "syn")]
 
     def test_dna_all_view_lists_every_nucleotide(self, dna):
         result = run_tool("nucleotide_conformation", dna, "-a")
-        rows = [line.split("\t") for line in result.stdout.splitlines()[1:]]
+        rows = [line.split("\t") for line in table_lines(result.stdout)[1:]]
         assert [(r[2], r[4]) for r in rows] == [("DT", "syn"), ("DC", "syn"),
                                                 ("DA", "anti"), ("DG", "anti")]
 
     def test_dna_syn_view_includes_purines(self, dna, tmp_path):
         syn_purine = write_pdb(tmp_path / "syndg.pdb",
                                nucleotide_lines(1, "DG", "A", 1, 60.0))
-        rows = run_tool("nucleotide_conformation", syn_purine, "-s").stdout.splitlines()[1:]
+        rows = table_lines(run_tool("nucleotide_conformation",
+                                    syn_purine, "-s").stdout)[1:]
         assert [r.split("\t")[2] for r in rows] == ["DG"]
-        assert run_tool("nucleotide_conformation", syn_purine).stdout.splitlines()[1:] == []
+        assert table_lines(run_tool("nucleotide_conformation",
+                                    syn_purine).stdout)[1:] == []
 
     def test_hybrid_structure_reports_both_strands(self, hybrid):
         result = run_tool("nucleotide_conformation", hybrid, "-a")
         assert result.returncode == 0, result.stderr
-        rows = [line.split("\t") for line in result.stdout.splitlines()[1:]]
+        rows = [line.split("\t") for line in table_lines(result.stdout)[1:]]
         assert [(r[0], r[2]) for r in rows] == [("A", "DT"), ("A", "DA"),
                                                 ("B", "U"), ("B", "A")]
 
     def test_hybrid_default_view_flags_both_pyrimidines(self, hybrid):
         rows = [line.split("\t") for line in
-                run_tool("nucleotide_conformation", hybrid).stdout.splitlines()[1:]]
+                table_lines(run_tool("nucleotide_conformation", hybrid).stdout)[1:]]
         assert [(r[0], r[2]) for r in rows] == [("A", "DT"), ("B", "U")]
 
     def test_all_and_syn_are_mutually_exclusive(self, rna):
@@ -578,13 +593,12 @@ class TestNucleotideConformation:
 
     def test_margin_adds_the_borderline_column(self, rna):
         result = run_tool("nucleotide_conformation", rna, "-a", "-m", "5")
-        header = result.stdout.splitlines()[0].split("\t")
-        assert header[-1] == "Borderline"
-        assert all(row.split("\t")[-1] in ("yes", "no")
-                   for row in result.stdout.splitlines()[1:])
+        lines = table_lines(result.stdout)
+        assert lines[0].split("\t")[-1] == "Borderline"
+        assert all(row.split("\t")[-1] in ("yes", "no") for row in lines[1:])
 
     def test_no_margin_column_by_default(self, rna):
-        header = run_tool("nucleotide_conformation", rna, "-a").stdout.splitlines()[0]
+        header = table_lines(run_tool("nucleotide_conformation", rna, "-a").stdout)[0]
         assert "Borderline" not in header
 
     @pytest.mark.parametrize("restyp", ["U", "DC"])
@@ -596,9 +610,9 @@ class TestNucleotideConformation:
         borderline = write_pdb(tmp_path / ("border_%s.pdb" % restyp),
                                nucleotide_lines(1, restyp, "A", 1, -92.0))
         plain = run_tool("nucleotide_conformation", borderline)
-        assert plain.stdout.splitlines()[1:] == []
-        rows = run_tool("nucleotide_conformation", borderline,
-                        "-m", "5").stdout.splitlines()[1:]
+        assert table_lines(plain.stdout)[1:] == []
+        rows = table_lines(run_tool("nucleotide_conformation", borderline,
+                                    "-m", "5").stdout)[1:]
         assert len(rows) == 1
         assert rows[0].split("\t")[4] == "anti"
         assert rows[0].split("\t")[-1] == "yes"
@@ -630,7 +644,7 @@ class TestNucleotideConformation:
     def test_each_conformation_gets_its_own_row(self, alt_rna):
         result = run_tool("nucleotide_conformation", alt_rna, "-a")
         assert result.returncode == 0, result.stderr
-        lines = result.stdout.splitlines()
+        lines = table_lines(result.stdout)
         assert lines[0].split("\t") == ["Chain", "Residue", "Residue name",
                                         "Chi", "Conformation", "Altloc"]
         rows = [line.split("\t") for line in lines[1:]]
@@ -638,16 +652,16 @@ class TestNucleotideConformation:
                                                       ("150.00", "anti", "B")]
 
     def test_altloc_column_absent_without_alternates(self, rna):
-        header = run_tool("nucleotide_conformation", rna, "-a").stdout.splitlines()[0]
+        header = table_lines(run_tool("nucleotide_conformation", rna, "-a").stdout)[0]
         assert "Altloc" not in header
 
     def test_default_view_flags_only_the_syn_conformation(self, alt_rna):
-        rows = run_tool("nucleotide_conformation", alt_rna).stdout.splitlines()[1:]
+        rows = table_lines(run_tool("nucleotide_conformation", alt_rna).stdout)[1:]
         assert [r.split("\t")[5] for r in rows] == ["A"]
 
     def test_altloc_column_coexists_with_the_margin_column(self, alt_rna):
-        header = run_tool("nucleotide_conformation", alt_rna, "-a",
-                          "-m", "5").stdout.splitlines()[0].split("\t")
+        header = table_lines(run_tool("nucleotide_conformation", alt_rna, "-a",
+                                      "-m", "5").stdout)[0].split("\t")
         assert header[-2:] == ["Altloc", "Borderline"]
 
     def test_coot_script_labels_each_conformation(self, alt_rna, tmp_path):
@@ -693,7 +707,7 @@ class TestNucleotideConformation:
     def test_modified_nucleotides_are_measured(self, modified_rna):
         result = run_tool("nucleotide_conformation", modified_rna, "-a")
         assert result.returncode == 0, result.stderr
-        rows = [line.split("\t") for line in result.stdout.splitlines()[1:]]
+        rows = [line.split("\t") for line in table_lines(result.stdout)[1:]]
         assert [(r[2], r[4]) for r in rows] == [("5MU", "syn"), ("1MG", "anti"),
                                                 ("PSU", "syn")]
         assert [float(r[3]) for r in rows] == [pytest.approx(40.0, abs=0.1),
@@ -701,8 +715,8 @@ class TestNucleotideConformation:
                                                pytest.approx(50.0, abs=0.1)]
 
     def test_modified_pyrimidine_shows_in_the_default_view(self, modified_rna):
-        rows = run_tool("nucleotide_conformation",
-                        modified_rna).stdout.splitlines()[1:]
+        rows = table_lines(run_tool("nucleotide_conformation",
+                                    modified_rna).stdout)[1:]
         # The pseudouridine counts as a pyrimidine, so a syn one is flagged too
         assert [r.split("\t")[2] for r in rows] == ["5MU", "PSU"]
 
@@ -718,16 +732,143 @@ class TestNucleotideConformation:
                   pdb_atom_line(6, "C2", "PSU", "A", 1, 3.8, 1.0, 0.0,
                                 record="HETATM")]
         psu = write_pdb(tmp_path / "psu.pdb", lines)
-        rows = run_tool("nucleotide_conformation", psu, "-a").stdout.splitlines()[1:]
+        rows = table_lines(run_tool("nucleotide_conformation", psu, "-a").stdout)[1:]
         assert len(rows) == 1
         assert rows[0].split("\t")[4] == "anti"
         assert float(rows[0].split("\t")[3]) == pytest.approx(150.0, abs=0.1)
-        assert run_tool("nucleotide_conformation", psu).stdout.splitlines()[1:] == []
+        assert table_lines(run_tool("nucleotide_conformation", psu).stdout)[1:] == []
 
     def test_modified_purine_only_shows_in_the_syn_view(self, tmp_path):
         syn_purine = write_pdb(tmp_path / "syn1mg.pdb",
                                nucleotide_lines(1, "1MG", "A", 1, 60.0,
                                                 record="HETATM"))
-        rows = run_tool("nucleotide_conformation", syn_purine, "-s").stdout.splitlines()[1:]
+        rows = table_lines(run_tool("nucleotide_conformation",
+                                    syn_purine, "-s").stdout)[1:]
         assert [r.split("\t")[2] for r in rows] == ["1MG"]
-        assert run_tool("nucleotide_conformation", syn_purine).stdout.splitlines()[1:] == []
+        assert table_lines(run_tool("nucleotide_conformation",
+                                    syn_purine).stdout)[1:] == []
+
+
+class TestNucleotideConformationStats:
+    """
+    The syn counts, written as '#' comment rows above the table. They report the
+    groups the chosen view deals with, counted over every nucleotide measured,
+    not just the listed ones
+    """
+
+    def test_default_view_counts_pyrimidines_only(self, rna):
+        # rna: one syn U and one anti C
+        result = run_tool("nucleotide_conformation", rna)
+        assert result.returncode == 0, result.stderr
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 1/2 (50.00%)"]
+
+    def test_the_counts_come_first(self, rna):
+        lines = run_tool("nucleotide_conformation", rna).stdout.splitlines()
+        assert lines[0] == "# Syn pyrimidines: 1/2 (50.00%)"
+        assert lines[1].startswith("Chain")
+
+    def test_syn_view_counts_every_group(self, dna):
+        # dna: syn DT and DC, anti DA and DG
+        result = run_tool("nucleotide_conformation", dna, "-s")
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 2/2 (100.00%)",
+                                                "Syn purines: 0/2 (0.00%)",
+                                                "Syn nucleotides: 2/4 (50.00%)"]
+
+    def test_all_view_counts_every_group(self, dna):
+        result = run_tool("nucleotide_conformation", dna, "-a")
+        assert [line.split(":")[0] for line in comment_lines(result.stdout)] == [
+            "Syn pyrimidines", "Syn purines", "Syn nucleotides"]
+
+    def test_counts_cover_nucleotides_the_view_does_not_list(self, dna):
+        # The default view lists no purine, but the -s counts still see all four
+        listed = table_lines(run_tool("nucleotide_conformation", dna).stdout)[1:]
+        assert len(listed) == 2
+        counted = run_tool("nucleotide_conformation", dna, "-s").stdout
+        assert "# Syn nucleotides: 2/4" in counted
+
+    def test_counts_go_to_the_output_file_too(self, dna, tmp_path):
+        target = tmp_path / "out.tsv"
+        result = run_tool("nucleotide_conformation", dna, "-a", "-o", target)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+        written = target.read_text().splitlines()
+        assert written[0] == "# Syn pyrimidines: 2/2 (100.00%)"
+        assert written[3] == "Chain\tResidue\tResidue name\tChi\tConformation"
+
+    def test_csv_output_keeps_the_comment_rows(self, dna):
+        result = run_tool("nucleotide_conformation", dna, "-f", "csv")
+        lines = result.stdout.splitlines()
+        assert lines[0] == "# Syn pyrimidines: 2/2 (100.00%)"
+        assert lines[1] == "Chain,Residue,Residue name,Chi,Conformation"
+
+    def test_margin_adds_the_borderline_counts(self, dna):
+        # DG sits at chi = -120, so a 31 degree margin makes it borderline
+        result = run_tool("nucleotide_conformation", dna, "-s", "-m", "31")
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 2/2 (100.00%)",
+                                                "Borderline pyrimidines: 0/2 (0.00%)",
+                                                "Syn purines: 0/2 (0.00%)",
+                                                "Borderline purines: 1/2 (50.00%)",
+                                                "Syn nucleotides: 2/4 (50.00%)",
+                                                "Borderline nucleotides: 1/4 (25.00%)"]
+
+    def test_no_borderline_counts_without_a_margin(self, dna):
+        result = run_tool("nucleotide_conformation", dna, "-s")
+        assert "Borderline" not in result.stdout
+
+    def test_precision_applies_to_the_percentages(self, tmp_path):
+        odd = write_pdb(tmp_path / "three.pdb",
+                        nucleotide_lines(1, "U", "A", 1, 0.0, z_offset=0.0)
+                        + nucleotide_lines(5, "C", "A", 2, 170.0, z_offset=20.0)
+                        + nucleotide_lines(9, "C", "A", 3, 170.0, z_offset=40.0))
+        result = run_tool("nucleotide_conformation", odd, "--precision", "1")
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 1/3 (33.3%)"]
+
+    @pytest.fixture
+    def modified_rna_file(self, tmp_path):
+        """
+        HETATM residues: a syn modified pyrimidine (5MU), a syn pseudouridine
+        joined through C5, an anti modified purine (1MG), and a ligand that
+        reuses the base atom names but has no sugar, so it is not a nucleotide.
+        """
+        lines = []
+        lines += nucleotide_lines(1, "5MU", "A", 1, 40.0, z_offset=0.0,
+                                  record="HETATM")
+        lines += nucleotide_lines(5, "PSU", "A", 2, 50.0, z_offset=20.0,
+                                  record="HETATM", base=("C5", "C4"))
+        lines += nucleotide_lines(9, "1MG", "A", 3, 170.0, z_offset=40.0,
+                                  record="HETATM")
+        lines += [pdb_atom_line(13, "N1", "LIG", "A", 4, 0.0, 0.0, 60.0,
+                                record="HETATM"),
+                  pdb_atom_line(14, "C2", "LIG", "A", 4, 1.0, 0.0, 60.0,
+                                record="HETATM")]
+        return write_pdb(tmp_path / "modified_counts.pdb", lines)
+
+    def test_modified_bases_are_counted(self, modified_rna_file):
+        # A modified pyrimidine, a pseudouridine, a modified purine, plus a
+        # ligand that is not a nucleotide and must not reach the counts
+        result = run_tool("nucleotide_conformation", modified_rna_file, "-s")
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 2/2 (100.00%)",
+                                                "Syn purines: 0/1 (0.00%)",
+                                                "Syn nucleotides: 2/3 (66.67%)"]
+
+    def test_a_structure_without_nucleotides_has_no_percentage(self, many_rows):
+        result = run_tool("nucleotide_conformation", many_rows, "-s")
+        assert result.returncode == 0, result.stderr
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 0/0 (NA)",
+                                                "Syn purines: 0/0 (NA)",
+                                                "Syn nucleotides: 0/0 (NA)"]
+
+    def test_alternate_conformations_are_counted_one_by_one(self, tmp_path):
+        lines = [
+            pdb_atom_line(1, "O4'", "U", "A", 1, 0.0, 1.0, 0.0),
+            pdb_atom_line(2, "C1'", "U", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(3, "N1", "U", "A", 1, 1.0, 0.0, 0.0),
+        ]
+        for serial, (alt, chi) in enumerate([("A", 30.0), ("B", 150.0)], start=4):
+            t = math.radians(chi)
+            lines.append(pdb_atom_line(serial, "C2", "U", "A", 1,
+                                       1.0, math.cos(t), math.sin(t), altloc=alt))
+        alt_rna = write_pdb(tmp_path / "altrna.pdb", lines)
+        result = run_tool("nucleotide_conformation", alt_rna)
+        assert comment_lines(result.stdout) == ["Syn pyrimidines: 1/2 (50.00%)"]

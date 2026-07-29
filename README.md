@@ -129,13 +129,14 @@ pdb_python_tools.nucleotide_conformation test_files/6ouo_aligned.cif
 ```
 
 ```
+# Syn pyrimidines: 54/1986 (2.72%)
 Chain   Residue Residue name    Chi     Conformation
 1       102     U       48.91   syn
 1       138     U       43.87   syn
 1       139     U       44.55   syn
 ```
 
-Showing just the top three above.
+Showing just the top three rows above.
 
 A nucleotide is called *syn* when χ is in `[-90°, +90°]` and *anti* otherwise. Three views are available (`-s` and `-a` are mutually exclusive):
 
@@ -143,11 +144,27 @@ A nucleotide is called *syn* when χ is in `[-90°, +90°]` and *anti* otherwise
 - `-s/--syn` — every syn nucleotide, purines (A, G, DA, DG) included, and no anti ones.
 - `-a/--all` — every nucleotide with its χ angle and conformation.
 
-`--precision` controls the decimal places on χ.
+How many nucleotides came out *syn* is reported, as `#` comment rows above the table
+
+```bash
+pdb_python_tools.nucleotide_conformation test_files/6ouo_aligned.cif -s
+```
+
+```
+# Syn pyrimidines: 54/1986 (2.72%)
+# Syn purines: 174/2656 (6.55%)
+# Syn nucleotides: 228/4642 (4.91%)
+Chain   Residue Residue name    Chi     Conformation
+1       49      A       58.26   syn
+1       60      G       -59.87  syn
+```
+
+
+`--precision` controls the decimal places on χ and on the percentages.
 
 A nucleotide modelled in more than one conformation is measured once per conformation. An `Altloc` column is added to tell those rows apart
 
-Because the ±90° cutoff is sharp, use `-m/--margin DEG` to catch χ values sitting close to the boundary: it adds a `Borderline` column (`yes`/`no`) and, in the default and `-s` views, also lists borderline-*anti* nucleotides that are within `DEG` of the boundary and could plausibly be syn. For example, `-m 5` flags a residue at χ = -88° as borderline and surfaces one at χ = -92° that the plain call would hide.
+Because the ±90° cutoff is sharp, use `-m/--margin DEG` to catch χ values sitting close to the boundary: it adds a `Borderline` column (`yes`/`no`) and, in the default and `-s` views, also lists borderline-*anti* nucleotides that are within `DEG` of the boundary. A borderline count is then reported for each group as well.
 
 ## Test files
 

@@ -116,6 +116,25 @@ class TestWriteTable:
         write_table(["A"], (["%d" % i] for i in range(3)))
         assert capsys.readouterr().out == "A\n0\n1\n2\n"
 
+    def test_comments_are_written_above_the_header(self, capsys):
+        write_table(["A"], [["1"]], comments=["first", "second"])
+        assert capsys.readouterr().out == "# first\n# second\nA\n1\n"
+
+    def test_no_comments_by_default(self, capsys):
+        write_table(["A"], [["1"]])
+        assert capsys.readouterr().out == "A\n1\n"
+
+    def test_comments_reach_a_file_too(self, tmp_path):
+        target = tmp_path / "out.tsv"
+        write_table(["A"], [["1"]], output=str(target), comments=["note"])
+        assert target.read_text().splitlines()[0] == "# note"
+
+    def test_comments_are_not_quoted_as_csv_cells(self, tmp_path):
+        target = tmp_path / "out.csv"
+        write_table(["A"], [["1"]], fmt="csv", output=str(target),
+                    comments=["a, b"])
+        assert target.read_text().splitlines()[0] == "# a, b"
+
 
 MARKERS = [
     ("A 10 SER", 1.23456, "Å", 1.111111, 2.222222, 3.333333),
