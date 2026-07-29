@@ -6,13 +6,12 @@ Find all atoms of other chains within a cutoff distance of a chosen chain, using
 a scipy cKDTree. By default one contact per residue pair is reported (the
 shortest); use -a/--all to list every atom pair.
 """
-from pdb_python_tools import Atom
-from pdb_python_tools import Residue
-from pdb_python_tools import load_residues
-from pdb_python_tools import find_contacts_kdtree
-from pdb_python_tools import add_output_args
-from pdb_python_tools import write_table
-from pdb_python_tools import write_coot_script
+from .core import load_residues_or_exit
+from .core import find_contacts_kdtree
+from .core import add_output_args
+from .core import add_version_arg
+from .core import write_table
+from .core import write_coot_script
 import argparse
 import sys
 
@@ -30,10 +29,11 @@ def main():
     parser.add_argument('-p', '--polar_only', action='store_true', dest='polar', help='check only polar')
     parser.add_argument('-a', '--all', action='store_true', dest='all',
                         help='all output: display all atoms involved and distances')
+    add_version_arg(parser)
     add_output_args(parser)
     args = parser.parse_args()
 
-    pdb = load_residues(args.pdb, args.hetatm, args.hydrogens)
+    pdb = load_residues_or_exit(args.pdb, args.hetatm, args.hydrogens)
 
     # Find the inter-chain contacts within that distance (scipy cKDTree)
     atom_pairs = find_contacts_kdtree(pdb, args.distance, args.chain, args.polar)
