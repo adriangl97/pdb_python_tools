@@ -27,6 +27,7 @@ Homepage = "https://github.com/adriangl97/pdb_python_tools"
 "pdb_python_tools.find_contacts" = "pdb_python_tools.find_contacts:main"
 "pdb_python_tools.CA_difference" = "pdb_python_tools.CA_difference:main"
 "pdb_python_tools.nucleotide_conformation" = "pdb_python_tools.nucleotide_conformation:main"
+"pdb_python_tools.coot_setup" = "pdb_python_tools.coot_setup:main"
 
 [tool.setuptools]
 packages = ["pdb_python_tools"]
