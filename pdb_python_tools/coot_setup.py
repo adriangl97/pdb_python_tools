@@ -2,12 +2,13 @@
 """
 coot_setup.py - install the Coot GUI extension.
 
-Copies coot_extension.py into Coot's startup directory (~/.coot-preferences by
-default), where Coot 0.9 loads every .py file when it starts, so the
-"pdb_python_tools" menu is there in every session.
+Copies coot_extension.py into Coot's startup directory. Coot 0.9 and Coot 1 read different directories
+(~/.coot-preferences and ~/.config/Coot, or $XDG_CONFIG_HOME when that is set),
+so by default the extension goes into the one of every Coot that looks
+installed.
 
-It also records the interpreter it was run with, in a settings file next to the
-extension. That is the interpreter the extension runs the tools with, so
+It also records the interpreter it was run with, in a settings file the
+extension reads. That is the interpreter the extension runs the tools with, so
 installing with the same Python the package was installed into is what makes
 the menu work without any further setup.
 """
@@ -20,16 +21,55 @@ import sys
 from .core import add_version_arg
 
 # Coot 0.9 runs every .py file in this directory at startup
-DEFAULT_COOT_DIR = os.path.expanduser(os.path.join("~", ".coot-preferences"))
+COOT_09_DIR = os.path.expanduser(os.path.join("~", ".coot-preferences"))
+
+
+def _config_home():
+    """$XDG_CONFIG_HOME, or ~/.config when it is not set."""
+    return os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser(
+        os.path.join("~", ".config"))
+
+
+def coot_1_dir():
+    """
+    The directory Coot 1 runs its startup scripts from.
+
+    Coot 1 takes $XDG_CONFIG_HOME as it stands, and only falls back to
+    ~/.config/Coot when it is unset, so this follows Coot rather than the XDG
+    convention of a directory per application.
+    """
+    from_env = os.environ.get("XDG_CONFIG_HOME")
+    if from_env:
+        return from_env
+    return os.path.expanduser(os.path.join("~", ".config", "Coot"))
+
+
+COOT_1_DIR = coot_1_dir()
+
 # The name the extension is installed under, and the file it comes from
 INSTALLED_NAME = "pdb_python_tools.py"
 EXTENSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "coot_extension.py")
 # Read by the extension to find this interpreter again (see coot_extension.py).
-# It lives beside the extension; Coot only runs the *.py and *.scm it finds in
-# there, so the settings file is left alone.
 CONFIG_NAME = "pdb_python_tools_coot.json"
-CONFIG_PATH = os.path.join(DEFAULT_COOT_DIR, CONFIG_NAME)
+CONFIG_PATH = os.path.join(_config_home(), "pdb_python_tools", CONFIG_NAME)
+
+
+def install_directories(coot="auto"):
+    """
+    The startup directories to install into.
+
+    "auto" takes the Coots that look installed: a Coot that has been started
+    once has its startup directory. When neither is there it installs for both,
+    since the directory can be created before the Coot that reads it is.
+    """
+    named = {"0.9": [COOT_09_DIR], "1": [COOT_1_DIR],
+             "both": [COOT_09_DIR, COOT_1_DIR]}
+    if coot in named:
+        return named[coot]
+    existing = [directory for directory in (COOT_09_DIR, COOT_1_DIR)
+                if os.path.isdir(directory)]
+    return existing or [COOT_09_DIR, COOT_1_DIR]
 
 
 def record_interpreter(python=None, config_path=CONFIG_PATH):
@@ -38,7 +78,7 @@ def record_interpreter(python=None, config_path=CONFIG_PATH):
 
     Defaults to the interpreter running this command, which is by definition
     one that has pdb_python_tools installed, and to the settings file the
-    extension reads, next to it in Coot's startup directory.
+    extension reads.
     """
     directory = os.path.dirname(config_path)
     if directory:
@@ -58,7 +98,7 @@ def record_interpreter(python=None, config_path=CONFIG_PATH):
     return config["python"]
 
 
-def install(directory=DEFAULT_COOT_DIR, force=False, symlink=False):
+def install(directory=COOT_09_DIR, force=False, symlink=False):
     """
     Put the extension in `directory` and return the path it was written to.
 
@@ -84,13 +124,19 @@ def install(directory=DEFAULT_COOT_DIR, force=False, symlink=False):
 def main():
     parser = argparse.ArgumentParser(
         prog='pdb_python_tools.coot_setup',
-        description='Install the pdb_python_tools extension for the Coot (0.9) GUI',
+        description='Install the pdb_python_tools extension for the Coot GUI '
+                    '(Coot 0.9 and Coot 1)',
         epilog='Usage: pdb_python_tools.coot_setup --install')
     parser.add_argument('--install', action='store_true',
                         help='copy the extension into Coot\'s startup directory')
-    parser.add_argument('--dir', default=DEFAULT_COOT_DIR,
-                        help='startup directory to install into '
-                             '(default: %s)' % DEFAULT_COOT_DIR)
+    parser.add_argument('--coot', choices=('auto', '0.9', '1', 'both'),
+                        default='auto',
+                        help='which Coot to install for (default: auto, every '
+                             'Coot whose startup directory is already there: '
+                             '%s for 0.9, %s for 1)' % (COOT_09_DIR, COOT_1_DIR))
+    parser.add_argument('--dir', default=None,
+                        help='startup directory to install into, instead of the '
+                             'one --coot would pick')
     parser.add_argument('--symlink', action='store_true',
                         help='link to the installed extension instead of copying '
                              'it, so it follows package upgrades')
@@ -110,19 +156,23 @@ def main():
     if not args.install:
         parser.error("nothing to do: pass --install (or --path)")
 
-    try:
-        target = install(args.dir, force=args.force, symlink=args.symlink)
-    except (FileExistsError, FileNotFoundError) as exc:
-        sys.exit("error: %s" % exc)
-    except OSError as exc:
-        sys.exit("error: could not install into %s: %s" % (args.dir, exc))
-    # The settings stay in the default directory even for a custom --dir: that
-    # is the one place the extension knows to look
+    directories = [args.dir] if args.dir else install_directories(args.coot)
+    targets = []
+    for directory in directories:
+        try:
+            targets.append(install(directory, force=args.force,
+                                   symlink=args.symlink))
+        except (FileExistsError, FileNotFoundError) as exc:
+            sys.exit("error: %s" % exc)
+        except OSError as exc:
+            sys.exit("error: could not install into %s: %s" % (directory, exc))
     interpreter = record_interpreter(args.python)
 
-    print("Installed: %s" % target)
+    for target in targets:
+        print("Installed: %s" % target)
     print("Interpreter recorded in %s: %s" % (CONFIG_PATH, interpreter))
-    print("Restart Coot: the tools are under the 'pdb_python_tools' menu.")
+    print("Restart Coot: the tools are under the 'pdb_python_tools' menu "
+          "(the menu bar in Coot 0.9, the toolbar in Coot 1).")
 
 
 if __name__ == "__main__":

@@ -3,23 +3,23 @@
 """
 pdb_python_tools inside the Coot GUI.
 
-Loading this file into Coot (0.9) adds a "pdb_python_tools" menu to the menu
-bar with one entry per tool. Each entry opens a dialog where the input
-structures are picked from the models already open in Coot, the tool's options
-are filled in, and "Run" starts the tool. The results come back as the
-clickable list the tools already write with --coot, opened automatically once
-the run finishes: clicking a row recenters the view on that residue.
+Loading this file into Coot (0.9 or 1) adds a "pdb_python_tools" menu. Each
+entry opens a dialog where the input structures are picked from the models
+already open in Coot, the tool's options are filled in, and "Run" starts the
+tool. The results come back as the clickable list the tools already write with
+--coot, opened automatically once the run finishes: clicking a row recenters
+the view on that residue.
 
-The tools are Python 3 and need numpy/scipy, while Coot 0.9 embeds Python 2, so
-they are run as a subprocess under an external Python 3 interpreter. That
-interpreter is taken from, in order: the entry in the dialog, the
-PDB_PYTHON_TOOLS_PYTHON environment variable, the one recorded next to this
-file by "pdb_python_tools.coot_setup --install", and finally plain "python3"
+The tools need numpy/scipy, so they are run as a subprocess under an external Python 3
+interpreter. That interpreter is taken from, in order: the entry in the dialog,
+the PDB_PYTHON_TOOLS_PYTHON environment variable, the one recorded by
+"pdb_python_tools.coot_setup --install", the interpreter Coot itself embeds
+when the tools are installed in it (Coot 1 only), and finally plain "python3"
 from PATH.
 
 Install with "pdb_python_tools.coot_setup --install", which copies this file
-into ~/.coot-preferences where Coot loads it at startup, or load it once from
-Coot with Calculate -> Run Script...
+into the startup directory of every Coot it finds, or load it once from Coot
+with Calculate -> Run Script...
 
 """
 from __future__ import print_function
@@ -27,25 +27,33 @@ from __future__ import print_function
 import json
 import os
 import subprocess
+import sys
 import tempfile
 
 MENU_NAME = "pdb_python_tools"
 
-# Written by "pdb_python_tools.coot_setup --install". It sits next to this file
-# in Coot's startup directory: Coot only runs the *.py and *.scm in there, so a
-# settings file is left alone.
-COOT_PREFERENCES_DIR = os.path.expanduser(os.path.join("~", ".coot-preferences"))
 CONFIG_NAME = "pdb_python_tools_coot.json"
-CONFIG_PATH = os.path.join(COOT_PREFERENCES_DIR, CONFIG_NAME)
 
-# Coot points these at its own bundled Python 2 and libraries. Leaving them in
+
+def _config_home():
+    """$XDG_CONFIG_HOME, or ~/.config when it is not set."""
+    from_env = os.environ.get("XDG_CONFIG_HOME")
+    if from_env:
+        return from_env
+    return os.path.expanduser(os.path.join("~", ".config"))
+
+
+# Written by "pdb_python_tools.coot_setup --install"
+CONFIG_PATH = os.path.join(_config_home(), "pdb_python_tools", CONFIG_NAME)
+
+# Coot points these at its own bundled Python and libraries. Leaving them in
 # place would make the external Python 3 load Coot's standard library instead of
 # its own, so they are dropped from the subprocess environment.
 _ENV_TO_DROP = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
                 "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
 
-# Where Coot keeps its scripting functions. 
-_COOT_MODULES = ("coot", "coot_utils", "coot_gui")
+# Where Coot keeps its scripting functions.
+_COOT_MODULES = ("coot", "coot_utils", "coot_gui", "coot_gui_api")
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +70,10 @@ def _coot_function(name):
     for module_name in _COOT_MODULES:
         try:
             module = __import__(module_name)
-        except ImportError:
+        except Exception:
+            # Not only ImportError: some of these modules raise on import when
+            # Coot is started without graphics, and a lookup is never worth
+            # taking the caller down with it
             continue
         function = getattr(module, name, None)
         if function is not None:
@@ -174,13 +185,13 @@ def load_config():
 
 def save_config(config):
     """
-    Write the settings into Coot's startup directory and return the path.
+    Write the settings and return the path they went to.
 
     An unwritable directory is not worth interrupting a run for, so it returns
     None instead of raising.
     """
     directory = os.path.dirname(CONFIG_PATH)
-    if not os.path.isdir(directory):
+    if directory and not os.path.isdir(directory):
         try:
             os.makedirs(directory)
         except OSError:
@@ -196,12 +207,40 @@ def save_config(config):
     return CONFIG_PATH
 
 
+def embedded_interpreter_has_the_tools():
+    """
+    Whether the Python that Coot embeds could run the tools itself.
+
+    Coot 0.9's Python 2 never can. Coot 1's Python 3 can when pdb_python_tools,
+    numpy and scipy are installed in it. The modules are looked up rather than
+    imported, so nothing heavy is pulled into the running Coot.
+    """
+    if sys.version_info[0] < 3:
+        return False
+    try:
+        from importlib import util
+    except ImportError:
+        return False
+    try:
+        for name in ("pdb_python_tools", "numpy", "scipy"):
+            if util.find_spec(name) is None:
+                return False
+    except (ImportError, ValueError, AttributeError):
+        return False
+    return True
+
+
 def default_python():
     """The Python 3 interpreter to run the tools with."""
     from_env = os.environ.get("PDB_PYTHON_TOOLS_PYTHON")
     if from_env:
         return from_env
-    return load_config().get("python") or "python3"
+    recorded = load_config().get("python")
+    if recorded:
+        return recorded
+    if embedded_interpreter_has_the_tools():
+        return sys.executable
+    return "python3"
 
 
 # ---------------------------------------------------------------------------
@@ -329,17 +368,22 @@ def build_command(tool, python, inputs, option_args, precision, fmt, table, scri
     The table goes to `table` and the clickable Coot script to `script`, both
     with --force: the script lives in a fresh temporary directory, and an
     existing table has already been confirmed by the dialog.
+
+    A `table` of None leaves -o out, so the tool writes the table to stdout and
+    no table file is created.
     """
     argv = [python, "-m", "pdb_python_tools." + tool.module]
     argv.extend(inputs)
     argv.extend(option_args)
-    argv.extend(["--precision", str(precision), "--format", fmt,
-                 "-o", table, "--coot", script, "--force"])
+    argv.extend(["--precision", str(precision), "--format", fmt])
+    if table:
+        argv.extend(["-o", table])
+    argv.extend(["--coot", script, "--force"])
     return argv
 
 
 def subprocess_environment():
-    """The environment to run the tools in, without Coot's Python 2 settings."""
+    """The environment to run the tools in, without Coot's own Python settings."""
     environment = dict(os.environ)
     for name in _ENV_TO_DROP:
         environment.pop(name, None)
@@ -347,35 +391,422 @@ def subprocess_environment():
 
 
 # ---------------------------------------------------------------------------
-# GTK helpers
+# GTK, in whichever version Coot embeds
 # ---------------------------------------------------------------------------
+#
+# Coot 0.9 embeds PyGTK (GTK 2) and Coot 1 embeds PyGObject (GTK 4). 
+# The two are different enough that the dialog never touches
+# either directly: it goes through one of the small toolkits below, which spell
+# out the same handful of operations once per GTK version. Everything the two
+# GTKs agree on -- get_text/set_text, get_active/set_active, set_sensitive,
+# set_tooltip_text -- is left to the widgets themselves.
 
-def _gtk():
-    """Coot 0.9's PyGTK module, or None when it cannot be imported."""
+class _Gtk2Toolkit(object):
+    """PyGTK, the GTK 2 binding Coot 0.9 embeds."""
+
+    version = "gtk2"
+
+    def __init__(self, gtk, gobject=None):
+        self.gtk = gtk
+        self.gobject = gobject
+
+    # -- windows and boxes -------------------------------------------------
+
+    def window(self, title, width=-1, height=-1, on_destroy=None):
+        window = self.gtk.Window(self.gtk.WINDOW_TOPLEVEL)
+        window.set_title(title)
+        window.set_default_size(width, height)
+        if on_destroy is not None:
+            window.connect("destroy", lambda *args: on_destroy())
+        return window
+
+    def show(self, window):
+        window.show_all()
+
+    def close(self, window):
+        window.destroy()
+
+    def vbox(self, spacing=4, border=0):
+        box = self.gtk.VBox(False, spacing)
+        box.set_border_width(border)
+        return box
+
+    def hbox(self, spacing=6):
+        return self.gtk.HBox(False, spacing)
+
+    def pack(self, box, child, expand=False):
+        box.pack_start(child, expand, expand, 0)
+
+    def window_content(self, window, child):
+        window.add(child)
+
+    def scrolled(self):
+        scrolled = self.gtk.ScrolledWindow()
+        scrolled.set_policy(self.gtk.POLICY_AUTOMATIC, self.gtk.POLICY_AUTOMATIC)
+        return scrolled
+
+    def scrolled_content(self, scrolled, child):
+        scrolled.add_with_viewport(child)
+
+    def separator(self):
+        return self.gtk.HSeparator()
+
+    # -- widgets -----------------------------------------------------------
+
+    def label(self, text="", wrap=False, width=-1):
+        label = self.gtk.Label(text)
+        label.set_alignment(0, 0.5)
+        if wrap:
+            label.set_line_wrap(True)
+        if width > 0:
+            label.set_size_request(width, -1)
+        return label
+
+    def button(self, text, on_click):
+        button = self.gtk.Button(text)
+        button.connect("clicked", lambda *args: on_click())
+        return button
+
+    def entry(self, text="", width_chars=-1):
+        entry = self.gtk.Entry()
+        if width_chars > 0:
+            entry.set_width_chars(width_chars)
+        entry.set_text(text)
+        return entry
+
+    def check(self, text, active=False):
+        check = self.gtk.CheckButton(text)
+        check.set_active(active)
+        return check
+
+    def combo(self):
+        return self.gtk.combo_box_new_text()
+
+    def combo_clear(self, combo):
+        combo.get_model().clear()
+
+    def combo_append(self, combo, text):
+        combo.append_text(text)
+
+    def combo_text(self, combo):
+        active = combo.get_active()
+        if active < 0:
+            return ""
+        return combo.get_model()[active][0]
+
+    # -- the main loop and its dialogs -------------------------------------
+
+    def timeout_add(self, milliseconds, function):
+        if self.gobject is not None:
+            return self.gobject.timeout_add(milliseconds, function)
+        return self.gtk.timeout_add(milliseconds, function)
+
+    def _message(self, parent, kind, buttons, text):
+        dialog = self.gtk.MessageDialog(parent, self.gtk.DIALOG_MODAL, kind, buttons)
+        # Set as a property rather than through the constructor: the message is
+        # a path or a tool's error output, not a format string
+        dialog.set_property("text", text)
+        response = dialog.run()
+        dialog.destroy()
+        return response
+
+    def confirm(self, parent, text, on_yes):
+        if self._message(parent, self.gtk.MESSAGE_QUESTION,
+                         self.gtk.BUTTONS_OK_CANCEL, text) == self.gtk.RESPONSE_OK:
+            on_yes()
+
+    def error(self, parent, text):
+        self._message(parent, self.gtk.MESSAGE_ERROR, self.gtk.BUTTONS_CLOSE, text)
+
+    def save_as(self, parent, name, on_chosen):
+        chooser = self.gtk.FileChooserDialog(
+            "Save the table as", parent, self.gtk.FILE_CHOOSER_ACTION_SAVE,
+            (self.gtk.STOCK_CANCEL, self.gtk.RESPONSE_CANCEL,
+             self.gtk.STOCK_SAVE, self.gtk.RESPONSE_OK))
+        chooser.set_do_overwrite_confirmation(True)
+        chooser.set_current_name(name)
+        chosen = chooser.get_filename() if chooser.run() == self.gtk.RESPONSE_OK else None
+        chooser.destroy()
+        if chosen:
+            on_chosen(chosen)
+
+
+class _GiToolkit(object):
+    """PyGObject with GTK 4."""
+
+    def __init__(self, gtk, gio, glib, gtk_version):
+        self.gtk = gtk
+        self.gio = gio
+        self.glib = glib
+        self.version = "gtk" + gtk_version.split(".")[0]
+        self.gtk4 = gtk_version.startswith("4")
+        # GTK 4 dialogs are answered through a callback, so they have to be
+        # kept alive until that callback runs
+        self._pending = []
+
+    # -- windows and boxes -------------------------------------------------
+
+    def window(self, title, width=-1, height=-1, on_destroy=None):
+        window = self.gtk.Window()
+        window.set_title(title)
+        window.set_default_size(width, height)
+        if on_destroy is not None:
+            window.connect("destroy", lambda *args: on_destroy())
+        return window
+
+    def show(self, window):
+        if self.gtk4:
+            window.present()
+        else:
+            window.show_all()
+
+    def close(self, window):
+        window.destroy()
+
+    def vbox(self, spacing=4, border=0):
+        box = self.gtk.Box(orientation=self.gtk.Orientation.VERTICAL, spacing=spacing)
+        self._set_border(box, border)
+        return box
+
+    def hbox(self, spacing=6):
+        return self.gtk.Box(orientation=self.gtk.Orientation.HORIZONTAL,
+                            spacing=spacing)
+
+    def _set_border(self, box, border):
+        if not border:
+            return
+        if self.gtk4:
+            for side in ("start", "end", "top", "bottom"):
+                getattr(box, "set_margin_" + side)(border)
+        else:
+            box.set_border_width(border)
+
+    def pack(self, box, child, expand=False):
+        if not self.gtk4:
+            box.pack_start(child, expand, expand, 0)
+            return
+        # GTK 4 has no packing arguments: a child grows because it says so, and
+        # only along the axis of the box it sits in
+        if expand:
+            child.set_hexpand(True)
+            if box.get_orientation() == self.gtk.Orientation.VERTICAL:
+                child.set_vexpand(True)
+        box.append(child)
+
+    def window_content(self, window, child):
+        if self.gtk4:
+            window.set_child(child)
+        else:
+            window.add(child)
+
+    def scrolled(self):
+        scrolled = self.gtk.ScrolledWindow()
+        scrolled.set_policy(self.gtk.PolicyType.AUTOMATIC,
+                            self.gtk.PolicyType.AUTOMATIC)
+        return scrolled
+
+    def scrolled_content(self, scrolled, child):
+        if self.gtk4:
+            scrolled.set_child(child)
+        else:
+            scrolled.add(child)
+
+    def separator(self):
+        return self.gtk.Separator(orientation=self.gtk.Orientation.HORIZONTAL)
+
+    # -- widgets -----------------------------------------------------------
+
+    def label(self, text="", wrap=False, width=-1):
+        label = self.gtk.Label(label=text)
+        label.set_xalign(0)
+        if wrap:
+            if hasattr(label, "set_wrap"):
+                label.set_wrap(True)
+            else:
+                label.set_line_wrap(True)
+        if width > 0:
+            label.set_size_request(width, -1)
+        return label
+
+    def button(self, text, on_click):
+        button = self.gtk.Button(label=text)
+        button.connect("clicked", lambda *args: on_click())
+        return button
+
+    def entry(self, text="", width_chars=-1):
+        entry = self.gtk.Entry()
+        if width_chars > 0:
+            entry.set_width_chars(width_chars)
+        entry.set_text(text)
+        return entry
+
+    def check(self, text, active=False):
+        check = self.gtk.CheckButton(label=text)
+        check.set_active(active)
+        return check
+
+    def combo(self):
+        return self.gtk.ComboBoxText()
+
+    def combo_clear(self, combo):
+        combo.remove_all()
+
+    def combo_append(self, combo, text):
+        combo.append_text(text)
+
+    def combo_text(self, combo):
+        return combo.get_active_text() or ""
+
+    # -- the main loop and its dialogs -------------------------------------
+
+    def timeout_add(self, milliseconds, function):
+        return self.glib.timeout_add(milliseconds, function)
+
+    def _keep(self, dialog):
+        self._pending.append(dialog)
+
+    def _release(self, dialog):
+        if dialog in self._pending:
+            self._pending.remove(dialog)
+
+    def confirm(self, parent, text, on_yes):
+        """
+        Ask, and call `on_yes` when the answer is yes.
+
+        A GTK 4 dialog cannot be run modally from Python, so the answer arrives
+        in a callback instead of as a return value. The GTK 2 toolkit calls
+        `on_yes` from inside confirm(); either way the caller does the same
+        thing with it.
+        """
+        if hasattr(self.gtk, "AlertDialog"):
+            dialog = self.gtk.AlertDialog()
+            dialog.set_message(text)
+            dialog.set_buttons(["Cancel", "Overwrite"])
+            dialog.set_cancel_button(0)
+            dialog.set_default_button(1)
+            self._keep(dialog)
+
+            def chosen(source, result, *args):
+                self._release(dialog)
+                try:
+                    answer = source.choose_finish(result)
+                except Exception:
+                    return  # dismissed without answering
+                if answer == 1:
+                    on_yes()
+            dialog.choose(parent, None, chosen)
+            return
+        dialog = self.gtk.MessageDialog(
+            transient_for=parent, modal=True,
+            message_type=self.gtk.MessageType.QUESTION,
+            buttons=self.gtk.ButtonsType.OK_CANCEL, text=text)
+
+        def responded(source, response):
+            source.destroy()
+            if response == self.gtk.ResponseType.OK:
+                on_yes()
+        dialog.connect("response", responded)
+        dialog.show()
+
+    def error(self, parent, text):
+        if hasattr(self.gtk, "AlertDialog"):
+            dialog = self.gtk.AlertDialog()
+            dialog.set_message(text)
+            dialog.show(parent)
+            return
+        dialog = self.gtk.MessageDialog(
+            transient_for=parent, modal=True,
+            message_type=self.gtk.MessageType.ERROR,
+            buttons=self.gtk.ButtonsType.CLOSE, text=text)
+        dialog.connect("response", lambda source, response: source.destroy())
+        dialog.show()
+
+    def save_as(self, parent, name, on_chosen):
+        if hasattr(self.gtk, "FileDialog"):
+            dialog = self.gtk.FileDialog()
+            dialog.set_initial_name(name)
+            self._keep(dialog)
+
+            def chosen(source, result, *args):
+                self._release(dialog)
+                try:
+                    picked = source.save_finish(result)
+                except Exception:
+                    return  # cancelled
+                if picked is not None and picked.get_path():
+                    on_chosen(picked.get_path())
+            dialog.save(parent, None, chosen)
+            return
+        chooser = self.gtk.FileChooserNative(
+            title="Save the table as", transient_for=parent,
+            action=self.gtk.FileChooserAction.SAVE)
+        chooser.set_current_name(name)
+        self._keep(chooser)
+
+        def responded(source, response):
+            self._release(chooser)
+            if response == self.gtk.ResponseType.ACCEPT:
+                picked = source.get_file()
+                if picked is not None and picked.get_path():
+                    on_chosen(picked.get_path())
+        chooser.connect("response", responded)
+        chooser.show()
+
+
+def _make_toolkit():
+    """Build the toolkit for the GTK in this process, or None when there is none."""
     try:
-        import gtk
-    except ImportError:
-        return None
-    return gtk
-
-
-def _timeout_add(milliseconds, function):
-    """Call `function` every `milliseconds` from the GTK main loop."""
-    try:
-        import gobject
-        return gobject.timeout_add(milliseconds, function)
+        import gtk  # Coot 0.9
     except ImportError:
         pass
-    gtk = _gtk()
-    return gtk.timeout_add(milliseconds, function)
+    else:
+        # PyGObject ships a stand-in "gtk" module that imports and then raises
+        # on every attribute, so PyGTK has to be recognised by one of its own
+        if getattr(gtk, "pygtk_version", None) is not None:
+            try:
+                import gobject
+            except ImportError:
+                gobject = None
+            if not hasattr(gobject, "timeout_add"):
+                gobject = None
+            return _Gtk2Toolkit(gtk, gobject)
+    try:
+        import gi  # Coot 1
+    except ImportError:
+        return None
+    # Coot has already settled on a version by the time this runs; asking for a
+    # different one would fail, so the one it picked is the one to use
+    try:
+        gtk_version = gi.get_required_version("Gtk")
+    except Exception:
+        gtk_version = None
+    if gtk_version is None:
+        for candidate in ("4.0", "3.0"):
+            try:
+                gi.require_version("Gtk", candidate)
+            except (ValueError, AttributeError):
+                continue
+            gtk_version = candidate
+            break
+    if gtk_version is None:
+        return None
+    try:
+        from gi.repository import Gtk, Gio, GLib
+    except ImportError:
+        return None
+    return _GiToolkit(Gtk, Gio, GLib, gtk_version)
 
 
-def _combo_text(combo):
-    """The text of the active row of a text combo, or "" when nothing is active."""
-    active = combo.get_active()
-    if active < 0:
-        return ""
-    return combo.get_model()[active][0]
+# One toolkit per session, in a list so that "not looked yet" and "looked, no
+# GTK" stay apart
+_TOOLKIT = []
+
+
+def _toolkit():
+    """The GTK toolkit Coot brought, or None when there is no GTK at all."""
+    if not _TOOLKIT:
+        _TOOLKIT.append(_make_toolkit())
+    return _TOOLKIT[0]
 
 
 def _set_tooltip(widget, text):
@@ -384,32 +815,13 @@ def _set_tooltip(widget, text):
         widget.set_tooltip_text(text)
 
 
-def _labelled_row(gtk, label_text, *widgets):
-    """An hbox of a fixed-width label followed by widgets."""
-    box = gtk.HBox(False, 6)
-    label = gtk.Label(label_text)
-    label.set_alignment(0, 0.5)
-    label.set_size_request(140, -1)
-    box.pack_start(label, False, False, 0)
+def _labelled_row(tk, label_text, *widgets):
+    """A row of a fixed-width label followed by widgets."""
+    box = tk.hbox()
+    tk.pack(box, tk.label(label_text, width=140))
     for index, widget in enumerate(widgets):
-        expand = index == 0
-        box.pack_start(widget, expand, expand, 0)
+        tk.pack(box, widget, expand=index == 0)
     return box
-
-
-def _message(parent, kind, text):
-    """Show a modal message dialog and wait for it to be dismissed."""
-    gtk = _gtk()
-    types = {"error": gtk.MESSAGE_ERROR, "info": gtk.MESSAGE_INFO,
-             "question": gtk.MESSAGE_QUESTION}
-    buttons = gtk.BUTTONS_OK_CANCEL if kind == "question" else gtk.BUTTONS_CLOSE
-    dialog = gtk.MessageDialog(parent, gtk.DIALOG_MODAL, types[kind], buttons)
-    # Set as a property rather than through the constructor: the message is a
-    # path or a tool's error output, not a format string
-    dialog.set_property("text", text)
-    response = dialog.run()
-    dialog.destroy()
-    return response == gtk.RESPONSE_OK
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +833,7 @@ class ToolDialog(object):
 
     def __init__(self, tool):
         self.tool = tool
-        self.gtk = _gtk()
+        self.tk = _toolkit()
         self.models = []
         self.model_combos = []
         self.option_widgets = []
@@ -432,118 +844,96 @@ class ToolDialog(object):
     # -- construction ------------------------------------------------------
 
     def show(self):
-        gtk = self.gtk
-        if gtk is None:
-            print("pdb_python_tools: no PyGTK available, cannot open the dialog")
+        tk = self.tk
+        if tk is None:
+            print("pdb_python_tools: no GTK available, cannot open the dialog")
             return
-        self.window = gtk.Window(gtk.WINDOW_TOPLEVEL)
-        self.window.set_title("pdb_python_tools: %s" % self.tool.label)
-        self.window.set_default_size(460, -1)
-        self.window.connect("destroy", self._on_destroy)
+        self.window = tk.window("pdb_python_tools: %s" % self.tool.label,
+                                width=460, on_destroy=self._on_destroy)
 
-        outer = gtk.VBox(False, 4)
-        outer.set_border_width(8)
+        outer = tk.vbox(spacing=4, border=8)
 
         if self.tool.tooltip:
-            heading = gtk.Label(self.tool.tooltip)
-            heading.set_alignment(0, 0.5)
-            heading.set_line_wrap(True)
-            outer.pack_start(heading, False, False, 2)
+            tk.pack(outer, tk.label(self.tool.tooltip, wrap=True))
 
         for index, label in enumerate(self.tool.models):
-            combo = gtk.combo_box_new_text()
+            combo = tk.combo()
             self.model_combos.append(combo)
             if index == 0:
-                refresh = gtk.Button("Refresh")
+                refresh = tk.button("Refresh", self._on_refresh)
                 _set_tooltip(refresh, "re-read the list of open models")
-                refresh.connect("clicked", self._on_refresh)
-                outer.pack_start(_labelled_row(gtk, label, combo, refresh),
-                                 False, False, 1)
+                tk.pack(outer, _labelled_row(tk, label, combo, refresh))
             else:
-                outer.pack_start(_labelled_row(gtk, label, combo), False, False, 1)
+                tk.pack(outer, _labelled_row(tk, label, combo))
         self.model_combos[0].connect("changed", self._on_model_changed)
 
-        outer.pack_start(gtk.HSeparator(), False, False, 4)
+        tk.pack(outer, tk.separator())
         for option in self.tool.options:
-            outer.pack_start(self._option_row(option), False, False, 1)
+            tk.pack(outer, self._option_row(option))
 
-        outer.pack_start(gtk.HSeparator(), False, False, 4)
-        self.precision_entry = gtk.Entry()
-        self.precision_entry.set_width_chars(4)
-        self.precision_entry.set_text("2")
+        tk.pack(outer, tk.separator())
+        self.precision_entry = tk.entry("2", width_chars=4)
         _set_tooltip(self.precision_entry,
                      "decimal places for the reported distances or angles")
-        self.format_combo = gtk.combo_box_new_text()
+        self.format_combo = tk.combo()
         for fmt in ("tsv", "csv"):
-            self.format_combo.append_text(fmt)
+            tk.combo_append(self.format_combo, fmt)
         self.format_combo.set_active(0)
-        outer.pack_start(_labelled_row(gtk, "Precision / format",
-                                       self.precision_entry, self.format_combo),
-                         False, False, 1)
+        tk.pack(outer, _labelled_row(tk, "Precision / format",
+                                     self.precision_entry, self.format_combo))
 
-        self.output_entry = gtk.Entry()
+        self.output_entry = tk.entry()
         _set_tooltip(self.output_entry,
-                     "where to keep the table; left empty it goes to a "
-                     "temporary file")
-        browse = gtk.Button("Browse...")
-        browse.connect("clicked", self._on_browse)
-        outer.pack_start(_labelled_row(gtk, "Save table to",
-                                       self.output_entry, browse),
-                         False, False, 1)
+                     "where to keep the table; left empty no table file is "
+                     "written")
+        browse = tk.button("Browse...", self._on_browse)
+        tk.pack(outer, _labelled_row(tk, "Save table to",
+                                     self.output_entry, browse))
 
-        self.open_check = gtk.CheckButton("Open the results in Coot when the run finishes")
-        self.open_check.set_active(True)
-        outer.pack_start(self.open_check, False, False, 1)
+        self.open_check = tk.check(
+            "Open the results in Coot when the run finishes", active=True)
+        tk.pack(outer, self.open_check)
 
-        self.python_entry = gtk.Entry()
-        self.python_entry.set_text(default_python())
+        self.python_entry = tk.entry(default_python())
         _set_tooltip(self.python_entry,
                      "Python 3 interpreter that has pdb_python_tools installed")
-        outer.pack_start(_labelled_row(gtk, "Python 3", self.python_entry),
-                         False, False, 1)
+        tk.pack(outer, _labelled_row(tk, "Python 3", self.python_entry))
 
-        outer.pack_start(gtk.HSeparator(), False, False, 4)
-        self.status_label = gtk.Label("")
-        self.status_label.set_alignment(0, 0.5)
-        self.status_label.set_line_wrap(True)
-        outer.pack_start(self.status_label, False, False, 2)
+        tk.pack(outer, tk.separator())
+        self.status_label = tk.label("", wrap=True)
+        tk.pack(outer, self.status_label)
 
-        buttons = gtk.HBox(True, 6)
-        self.run_button = gtk.Button("Run")
-        self.run_button.connect("clicked", self._on_run)
-        close_button = gtk.Button("Close")
-        close_button.connect("clicked", lambda *args: self.window.destroy())
-        buttons.pack_start(self.run_button, True, True, 0)
-        buttons.pack_start(close_button, True, True, 0)
-        outer.pack_start(buttons, False, False, 2)
+        buttons = tk.hbox()
+        self.run_button = tk.button("Run", self._on_run)
+        close_button = tk.button("Close", lambda: tk.close(self.window))
+        tk.pack(buttons, self.run_button, expand=True)
+        tk.pack(buttons, close_button, expand=True)
+        tk.pack(outer, buttons)
 
-        self.window.add(outer)
+        tk.window_content(self.window, outer)
         self._on_refresh()
-        self.window.show_all()
+        tk.show(self.window)
 
     def _option_row(self, option):
         """The widget row for one option, remembering the widget it holds."""
-        gtk = self.gtk
+        tk = self.tk
         if option.kind == "check":
-            widget = gtk.CheckButton(option.label)
-            widget.set_active(bool(option.default))
+            widget = tk.check(option.label, active=bool(option.default))
             row = widget
         elif option.kind == "choice":
-            widget = gtk.combo_box_new_text()
+            widget = tk.combo()
             for label, _flag in option.choices:
-                widget.append_text(label)
+                tk.combo_append(widget, label)
             widget.set_active(0)
-            row = _labelled_row(gtk, option.label, widget)
+            row = _labelled_row(tk, option.label, widget)
         elif option.kind == "chain":
-            widget = gtk.combo_box_new_text()
+            widget = tk.combo()
             self.chain_combos.append(widget)
-            row = _labelled_row(gtk, option.label, widget)
+            row = _labelled_row(tk, option.label, widget)
         else:
-            widget = gtk.Entry()
-            widget.set_width_chars(8)
-            if option.default is not None:
-                widget.set_text(str(option.default))
-            row = _labelled_row(gtk, option.label, widget)
+            text = "" if option.default is None else str(option.default)
+            widget = tk.entry(text, width_chars=8)
+            row = _labelled_row(tk, option.label, widget)
         _set_tooltip(widget, option.tooltip)
         self.option_widgets.append((option, widget))
         return row
@@ -552,12 +942,13 @@ class ToolDialog(object):
 
     def _on_refresh(self, *args):
         """Re-read the open models and repopulate the combos."""
+        tk = self.tk
         self.models = open_models()
         for index, combo in enumerate(self.model_combos):
             previous = combo.get_active()
-            combo.get_model().clear()
+            tk.combo_clear(combo)
             for imol, name in self.models:
-                combo.append_text("%d: %s" % (imol, os.path.basename(name)))
+                tk.combo_append(combo, "%d: %s" % (imol, os.path.basename(name)))
             if not self.models:
                 continue
             # Default the second input to a different model than the first
@@ -572,13 +963,14 @@ class ToolDialog(object):
         """Refill the chain combo from the first selected model."""
         if not self.chain_combos:
             return
+        tk = self.tk
         imol = self._selected_imol(0)
         chains = chain_ids_of(imol) if imol is not None else []
         for combo in self.chain_combos:
-            previous = _combo_text(combo)
-            combo.get_model().clear()
+            previous = tk.combo_text(combo)
+            tk.combo_clear(combo)
             for chain in chains:
-                combo.append_text(chain)
+                tk.combo_append(combo, chain)
             if previous in chains:
                 combo.set_active(chains.index(previous))
             elif chains:
@@ -598,7 +990,7 @@ class ToolDialog(object):
         if option.kind in ("check", "choice"):
             return widget.get_active()
         if option.kind == "chain":
-            return _combo_text(widget)
+            return self.tk.combo_text(widget)
         return widget.get_text()
 
     def _option_args(self):
@@ -607,10 +999,12 @@ class ToolDialog(object):
                   for option, widget in self.option_widgets]
         return option_arguments(self.tool.options, values)
 
-    def _prepare(self):
+    def _checked_settings(self):
         """
-        Everything the run needs: the argv, the working directory and the
-        paths the tool will write to.
+        Everything the dialog says, checked but not acted on yet.
+
+        Nothing is written here, so the run can still be called off by a bad
+        entry, or by the answer to the overwrite question.
         """
         python = self.python_entry.get_text().strip() or "python3"
         precision = self.precision_entry.get_text().strip() or "2"
@@ -624,36 +1018,55 @@ class ToolDialog(object):
             if imol is None:
                 raise ValueError("Pick a model for '%s'." % label)
             imols.append(imol)
-        option_args = self._option_args()
+        return {"python": python, "precision": precision, "imols": imols,
+                "option_args": self._option_args(),
+                "fmt": self.tk.combo_text(self.format_combo) or "tsv",
+                "output": self.output_entry.get_text().strip()}
 
-        fmt = _combo_text(self.format_combo) or "tsv"
-        output = self.output_entry.get_text().strip()
-        # --force is passed for the sake of the temporary script, so an existing
-        # table the user named is confirmed here instead
-        if output and os.path.exists(output):
-            if not _message(self.window, "question",
-                            "%s already exists. Overwrite it?" % output):
-                raise ValueError("Cancelled.")
-
+    def _prepare(self, settings):
+        """
+        Everything the run needs: the argv, the working directory and the
+        paths the tool will write to.
+        """
         work_dir = tempfile.mkdtemp(prefix="pdb_python_tools_")
-        table_path = output or os.path.join(work_dir, "%s.%s" % (self.tool.module, fmt))
+        # No name given means no table file at all: the tool prints it instead
+        table_path = settings["output"] or None
         script_path = os.path.join(work_dir, "%s_coot.py" % self.tool.module)
-        inputs = [export_model(imol, work_dir) for imol in imols]
-        argv = build_command(self.tool, python, inputs, option_args, precision,
-                             fmt, table_path, script_path)
+        inputs = [export_model(imol, work_dir) for imol in settings["imols"]]
+        argv = build_command(self.tool, settings["python"], inputs,
+                             settings["option_args"], settings["precision"],
+                             settings["fmt"], table_path, script_path)
         return {"argv": argv, "work_dir": work_dir, "inputs": inputs,
-                "table": table_path, "script": script_path, "python": python}
+                "table": table_path, "script": script_path,
+                "python": settings["python"]}
 
     # -- running -----------------------------------------------------------
 
-    def _on_run(self, *args):
+    def _on_run(self):
         if self.process is not None:
             return
         try:
-            state = self._prepare()
+            settings = self._checked_settings()
         except ValueError as exc:
             self._set_status(str(exc))
             return
+        except Exception as exc:
+            self._error("Could not start the run:\n\n%s" % exc)
+            return
+        # --force is passed for the sake of the temporary script, so an existing
+        # table the user named is confirmed here instead
+        output = settings["output"]
+        if output and os.path.exists(output):
+            self.tk.confirm(self.window,
+                            "%s already exists. Overwrite it?" % output,
+                            lambda: self._start(settings))
+            return
+        self._start(settings)
+
+    def _start(self, settings):
+        """Export the models and launch the tool."""
+        try:
+            state = self._prepare(settings)
         except Exception as exc:
             self._error("Could not start the run:\n\n%s" % exc)
             return
@@ -673,7 +1086,7 @@ class ToolDialog(object):
         self.process = state["process"]
         self.run_button.set_sensitive(False)
         self._set_status("Running %s..." % self.tool.module)
-        _timeout_add(200, self._poll)
+        self.tk.timeout_add(200, self._poll)
 
     def _poll(self):
         """Check on the subprocess from the GTK main loop."""
@@ -707,9 +1120,14 @@ class ToolDialog(object):
                         % (self.tool.module, returncode, _tail(message)))
             return
 
-        rows = _count_rows(state["table"])
-        self._set_status("%s: %d row(s). Table: %s"
-                         % (self.tool.module, rows, state["table"]))
+        if state["table"]:
+            rows = _count_rows(state["table"])
+            self._set_status("%s: %d row(s). Table: %s"
+                             % (self.tool.module, rows, state["table"]))
+        else:
+            rows = _count_rows_in(output.splitlines())
+            self._set_status("%s: %d row(s). The table was not saved."
+                             % (self.tool.module, rows))
         # Remember an interpreter that worked
         config = load_config()
         if config.get("python") != state["python"]:
@@ -738,19 +1156,12 @@ class ToolDialog(object):
 
     # -- small helpers -----------------------------------------------------
 
-    def _on_browse(self, *args):
-        gtk = self.gtk
-        chooser = gtk.FileChooserDialog(
-            "Save the table as", self.window, gtk.FILE_CHOOSER_ACTION_SAVE,
-            (gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_SAVE, gtk.RESPONSE_OK))
-        chooser.set_do_overwrite_confirmation(True)
-        chooser.set_current_name("%s.%s" % (self.tool.module,
-                                            _combo_text(self.format_combo) or "tsv"))
-        if chooser.run() == gtk.RESPONSE_OK:
-            self.output_entry.set_text(chooser.get_filename() or "")
-        chooser.destroy()
+    def _on_browse(self):
+        name = "%s.%s" % (self.tool.module,
+                          self.tk.combo_text(self.format_combo) or "tsv")
+        self.tk.save_as(self.window, name, self.output_entry.set_text)
 
-    def _on_destroy(self, *args):
+    def _on_destroy(self):
         """Stop a run that is still going when the dialog is closed."""
         if self.process is not None and self.process.poll() is None:
             try:
@@ -764,7 +1175,7 @@ class ToolDialog(object):
 
     def _error(self, text):
         self._set_status(text.splitlines()[0])
-        _message(self.window, "error", text)
+        self.tk.error(self.window, text)
 
 
 def _tail(text, limit=2000):
@@ -781,18 +1192,23 @@ def _count_rows(path):
     except (IOError, OSError):
         return 0
     try:
-        rows = 0
-        header_seen = False
-        for line in handle:
-            if not line.strip() or line.startswith("#"):
-                continue
-            if not header_seen:
-                header_seen = True
-                continue
-            rows += 1
-        return rows
+        return _count_rows_in(handle)
     finally:
         handle.close()
+
+
+def _count_rows_in(lines):
+    """The same count for a table that was printed instead of written."""
+    rows = 0
+    header_seen = False
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            continue
+        if not header_seen:
+            header_seen = True
+            continue
+        rows += 1
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -814,26 +1230,20 @@ def pdb_python_tools_gui(module=None):
                 return
         raise ValueError("Unknown tool: %s" % module)
 
-    gtk = _gtk()
-    if gtk is None:
-        print("pdb_python_tools: no PyGTK available, cannot open the dialog")
+    tk = _toolkit()
+    if tk is None:
+        print("pdb_python_tools: no GTK available, cannot open the dialog")
         return
-    window = gtk.Window(gtk.WINDOW_TOPLEVEL)
-    window.set_title(MENU_NAME)
-    window.set_default_size(300, -1)
-    box = gtk.VBox(False, 4)
-    box.set_border_width(8)
+    window = tk.window(MENU_NAME, width=300)
+    box = tk.vbox(spacing=4, border=8)
     for tool in TOOLS:
-        button = gtk.Button(tool.label)
+        button = tk.button(tool.label, _tool_callback(tool))
         _set_tooltip(button, tool.tooltip)
-        button.connect("clicked", _tool_callback(tool))
-        box.pack_start(button, False, False, 0)
-    close_button = gtk.Button("Close")
-    close_button.connect("clicked", lambda *args: window.destroy())
-    box.pack_start(gtk.HSeparator(), False, False, 4)
-    box.pack_start(close_button, False, False, 0)
-    window.add(box)
-    window.show_all()
+        tk.pack(box, button)
+    tk.pack(box, tk.separator())
+    tk.pack(box, tk.button("Close", lambda: tk.close(window)))
+    tk.window_content(window, box)
+    tk.show(window)
 
 
 def _tool_callback(tool):
@@ -843,12 +1253,23 @@ def _tool_callback(tool):
     return callback
 
 
-def add_pdb_python_tools_menu():
+def _action_name(tool):
     """
-    Add the pdb_python_tools menu to Coot's menu bar.
+    The name of the Coot 1 action that opens one tool's dialog.
 
-    Returns True when the menu was added. A Coot without the menu helpers still
-    has pdb_python_tools_gui() in the scripting window.
+    A Gio action name is only allowed alphanumerics, '-' and '.', so the
+    module's underscores do not survive into it.
+    """
+    return "pdb-python-tools-" + tool.module.replace("_", "-").lower()
+
+
+def _add_menu_to_menubar():
+    """
+    Coot 0.9: a pdb_python_tools menu in the menu bar.
+
+    Returns False when this Coot does not have the two helpers that build one,
+    which is how Coot 1 ends
+    up on the toolbar instead.
     """
     coot_menubar_menu = _coot_function("coot_menubar_menu")
     add_menu_item = _coot_function("add_simple_coot_menu_menuitem")
@@ -862,6 +1283,69 @@ def add_pdb_python_tools_menu():
     return True
 
 
+def _add_menu_to_toolbar():
+    """
+    Coot 1: a pdb_python_tools menu button on the main toolbar.
+
+    Coot 1 builds its menus from GMenu models driven by actions on the
+    application, and coot_gui has a helper for each half. A Coot 1 without them
+    gets the same menu built here, straight through coot_gui_api.
+    """
+    attach = _coot_function("attach_module_menu_button")
+    add_action = _coot_function("add_simple_action_to_menu")
+    if attach is not None and add_action is not None:
+        menu = attach(MENU_NAME)
+        if menu is not None:
+            for tool in TOOLS:
+                add_action(menu, tool.label, _action_name(tool),
+                           _tool_callback(tool))
+            return True
+    return _add_menu_with_gio()
+
+
+def _add_menu_with_gio():
+    """Build the Coot 1 toolbar menu without coot_gui's helpers."""
+    tk = _toolkit()
+    if tk is None or getattr(tk, "gio", None) is None:
+        return False
+    try:
+        import coot_gui_api
+    except ImportError:
+        return False
+    application = getattr(coot_gui_api, "application", None)
+    main_toolbar = getattr(coot_gui_api, "main_toolbar", None)
+    if application is None or main_toolbar is None:
+        return False
+    app = application()
+    toolbar = main_toolbar()
+    if app is None or toolbar is None:
+        return False
+    menu = tk.gio.Menu.new()
+    popover = tk.gtk.PopoverMenu()
+    popover.set_menu_model(menu)
+    button = tk.gtk.MenuButton(label=MENU_NAME)
+    button.set_popover(popover)
+    toolbar.append(button)
+    for tool in TOOLS:
+        name = _action_name(tool)
+        action = tk.gio.SimpleAction.new(name, None)
+        action.connect("activate", _tool_callback(tool))
+        app.add_action(action)
+        menu.append(tool.label, "app." + name)
+    return True
+
+
+def add_pdb_python_tools_menu():
+    """
+    Add the pdb_python_tools menu to Coot.
+
+    In Coot 0.9 that is a menu in the menu bar, in Coot 1 a menu button on the
+    main toolbar. Returns True when one of them was added. A Coot that takes
+    neither still has pdb_python_tools_gui() in the scripting window.
+    """
+    return _add_menu_to_menubar() or _add_menu_to_toolbar()
+
+
 def _install_menu_quietly():
     """
     Add the menu when this file is loaded by Coot.
@@ -872,12 +1356,33 @@ def _install_menu_quietly():
     """
     if _coot_function("set_rotation_centre") is None:
         return
+    advice = ("pdb_python_tools: could not add the menu; "
+              "run pdb_python_tools_gui() from the scripting window instead")
     try:
-        if not add_pdb_python_tools_menu():
-            print("pdb_python_tools: could not add the menu; "
-                  "run pdb_python_tools_gui() from the scripting window instead")
+        if add_pdb_python_tools_menu():
+            return
     except Exception as exc:
         print("pdb_python_tools: could not add the menu: %s" % exc)
+        return
+    # Startup scripts can run before Coot has finished building its window, in
+    # which case there is nothing to add the menu to yet: try once more later
+    tk = _toolkit()
+    if tk is None:
+        print(advice)
+        return
+
+    def retry():
+        try:
+            if not add_pdb_python_tools_menu():
+                print(advice)
+        except Exception as exc:
+            print("pdb_python_tools: could not add the menu: %s" % exc)
+        return False
+
+    try:
+        tk.timeout_add(2000, retry)
+    except Exception:
+        print(advice)
 
 
 _install_menu_quietly()
