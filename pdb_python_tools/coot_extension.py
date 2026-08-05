@@ -368,12 +368,17 @@ def build_command(tool, python, inputs, option_args, precision, fmt, table, scri
     The table goes to `table` and the clickable Coot script to `script`, both
     with --force: the script lives in a fresh temporary directory, and an
     existing table has already been confirmed by the dialog.
+
+    A `table` of None leaves -o out, so the tool writes the table to stdout and
+    no table file is created.
     """
     argv = [python, "-m", "pdb_python_tools." + tool.module]
     argv.extend(inputs)
     argv.extend(option_args)
-    argv.extend(["--precision", str(precision), "--format", fmt,
-                 "-o", table, "--coot", script, "--force"])
+    argv.extend(["--precision", str(precision), "--format", fmt])
+    if table:
+        argv.extend(["-o", table])
+    argv.extend(["--coot", script, "--force"])
     return argv
 
 
@@ -879,8 +884,8 @@ class ToolDialog(object):
 
         self.output_entry = tk.entry()
         _set_tooltip(self.output_entry,
-                     "where to keep the table; left empty it goes to a "
-                     "temporary file")
+                     "where to keep the table; left empty no table file is "
+                     "written")
         browse = tk.button("Browse...", self._on_browse)
         tk.pack(outer, _labelled_row(tk, "Save table to",
                                      self.output_entry, browse))
@@ -1024,8 +1029,8 @@ class ToolDialog(object):
         paths the tool will write to.
         """
         work_dir = tempfile.mkdtemp(prefix="pdb_python_tools_")
-        table_path = settings["output"] or os.path.join(
-            work_dir, "%s.%s" % (self.tool.module, settings["fmt"]))
+        # No name given means no table file at all: the tool prints it instead
+        table_path = settings["output"] or None
         script_path = os.path.join(work_dir, "%s_coot.py" % self.tool.module)
         inputs = [export_model(imol, work_dir) for imol in settings["imols"]]
         argv = build_command(self.tool, settings["python"], inputs,
@@ -1115,9 +1120,14 @@ class ToolDialog(object):
                         % (self.tool.module, returncode, _tail(message)))
             return
 
-        rows = _count_rows(state["table"])
-        self._set_status("%s: %d row(s). Table: %s"
-                         % (self.tool.module, rows, state["table"]))
+        if state["table"]:
+            rows = _count_rows(state["table"])
+            self._set_status("%s: %d row(s). Table: %s"
+                             % (self.tool.module, rows, state["table"]))
+        else:
+            rows = _count_rows_in(output.splitlines())
+            self._set_status("%s: %d row(s). The table was not saved."
+                             % (self.tool.module, rows))
         # Remember an interpreter that worked
         config = load_config()
         if config.get("python") != state["python"]:
@@ -1182,18 +1192,23 @@ def _count_rows(path):
     except (IOError, OSError):
         return 0
     try:
-        rows = 0
-        header_seen = False
-        for line in handle:
-            if not line.strip() or line.startswith("#"):
-                continue
-            if not header_seen:
-                header_seen = True
-                continue
-            rows += 1
-        return rows
+        return _count_rows_in(handle)
     finally:
         handle.close()
+
+
+def _count_rows_in(lines):
+    """The same count for a table that was printed instead of written."""
+    rows = 0
+    header_seen = False
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            continue
+        if not header_seen:
+            header_seen = True
+            continue
+        rows += 1
+    return rows
 
 
 # ---------------------------------------------------------------------------

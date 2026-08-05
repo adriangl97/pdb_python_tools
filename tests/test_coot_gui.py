@@ -239,6 +239,13 @@ class TestBuildCommand:
         # Re-running must not trip over the previous run's files
         assert "--force" in argv
 
+    def test_no_table_means_no_output_flag(self):
+        argv = extension.build_command(
+            tool_by_module("CA_difference"), "python3", ["/tmp/a.cif", "/tmp/b.cif"],
+            [], 2, "tsv", None, "/tmp/s.py")
+        assert "-o" not in argv and "--output" not in argv
+        assert argv[argv.index("--coot") + 1] == "/tmp/s.py"
+
 
 class TestSubprocessEnvironment:
     def test_coots_python_settings_are_dropped(self, monkeypatch):

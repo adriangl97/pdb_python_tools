@@ -96,9 +96,10 @@ Each menu entry opens a dialog where:
 - **Run** starts the tool and the generated Coot script opens by itself when it
   finishes, so clicking a row recenters the view. Untick *Open the results in
   Coot* to only write the files.
-- the table goes to a temporary file (the default tmp folder for python) unless a path is given under **Save table
-  to**, and the status line at the bottom says where it ended up and how many
-  rows it has. A failed run shows the tool's own error message.
+- the table is only written when a path is given under **Save table to**; left
+  empty, no table file is created. The status line at the bottom says
+  how many rows the run produced and, when it was saved, where it ended up. A
+  failed run shows the tool's own error message.
 
 The tools need Python 3 with numpy and scipy:
 the tools are run as a subprocess under the interpreter recorded at install
