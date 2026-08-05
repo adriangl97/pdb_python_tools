@@ -25,7 +25,7 @@ This puts five commands on your `PATH`, the four analysis tools:
 - `pdb_python_tools.nucleotide_conformation`
 
 and `pdb_python_tools.coot_setup`, which installs the [Coot GUI
-extension](#running-the-tools-inside-coot-09).
+extension](#running-the-tools-inside-coot).
 
 Each command name matches its module path, so without installing you can run the
 same tool from a clone with `python -m <command>`, for example
@@ -56,16 +56,17 @@ All analysis tools share the same interface:
 - `-f/--format {tsv,csv}` — output format (default `tsv`).
 - `-o/--output PATH` — write to a file instead of stdout; refuses to overwrite an existing file unless `--force` is given.
 - `--precision N` — decimal places for distances or angles (default `2`); `--full-precision` or negative valued prints raw floats.
-- `--coot PATH` — additionally write a [Coot](https://www2.mrc-lmb.cam.ac.uk/personal/pemsley/coot/) script (for 0.9, unsure if it works for Coot 1) to `PATH`. Open it in Coot (`Calculate → Run Script…`) to get a dialog listing the results in the same order as the table, each row showing the relevant number; clicking a row recenters the view on that residue's CA/C1' (or, for `pdb_python_tools.find_contacts`, on the contact midpoint). Refuses to overwrite `PATH` unless `--force` is given. To skip the terminal entirely, see [Running the tools inside Coot](#running-the-tools-inside-coot-09) below.
+- `--coot PATH` — additionally write a [Coot](https://www2.mrc-lmb.cam.ac.uk/personal/pemsley/coot/) script (works in Coot 0.9 and Coot 1) to `PATH`. Open it in Coot (`Calculate → Run Script…`) to get a dialog listing the results in the same order as the table, each row showing the relevant number; clicking a row recenters the view on that residue's CA/C1' (or, for `pdb_python_tools.find_contacts`, on the contact midpoint). Refuses to overwrite `PATH` unless `--force` is given. To skip the terminal entirely, see [Running the tools inside Coot](#running-the-tools-inside-coot) below.
 - `--version` — print the installed version and exit.
 
 > **Alternate conformations:** every alternate conformation in a file is read and kept, and the conformations are tracked separately, but the global (e.g. Max distance and CA/C1' distance) are shared for now.
 
 > **Alignment note:** `pdb_python_tools.atom_tracker` and `pdb_python_tools.CA_difference` compare coordinates directly, so the two inputs must be pre-aligned first (e.g. in ChimeraX). If you just ran a refinement and are comparing the input and output, no alignment is needed.
 
-## Running the tools inside Coot 0.9
+## Running the tools inside Coot
 
-The tools can also be driven from the Coot GUI, without a terminal.
+The tools can also be driven from the Coot GUI, without a terminal. Both Coot
+0.9 and Coot 1 are supported.
 
 Install the extension with the same Python the package was installed into:
 
@@ -73,12 +74,17 @@ Install the extension with the same Python the package was installed into:
 pdb_python_tools.coot_setup --install
 ```
 
-That copies the extension to `~/.coot-preferences/pdb_python_tools.py`, which
-Coot runs at startup, and records the interpreter beside it in
-`~/.coot-preferences/pdb_python_tools_coot.json` (Coot only runs the `*.py` and
-`*.scm` it finds there, so the settings file is left alone). Restart Coot and the tools are under a new
-**pdb_python_tools** menu in the menu bar. To try it once without installing,
-run `Calculate → Run Script…` on the file printed by
+That copies the extension into the startup directory of every Coot it finds —
+`~/.coot-preferences/pdb_python_tools.py` for Coot 0.9,
+`~/.config/Coot/pdb_python_tools.py` for Coot 1 (or `$XDG_CONFIG_HOME` itself,
+which is the directory Coot 1 reads when that variable is set) and records
+the interpreter in
+`~/.config/pdb_python_tools/pdb_python_tools_coot.json`. Pick a single Coot with
+`--coot 0.9` or `--coot 1` if you would rather not install for both.
+
+Restart Coot and the tools are under a new **pdb_python_tools** menu: in the
+menu bar in Coot. To try it once without
+installing, run `Calculate → Run Script…` on the file printed by
 `pdb_python_tools.coot_setup --path` and the menu is added for that session.
 
 Each menu entry opens a dialog where:
@@ -94,17 +100,17 @@ Each menu entry opens a dialog where:
   to**, and the status line at the bottom says where it ended up and how many
   rows it has. A failed run shows the tool's own error message.
 
-Coot 0.9 embeds Python 2 while the tools need Python 3, numpy and scipy, so the
-tools are run as a subprocess under the interpreter recorded at install time.
-It can be changed in the dialog's **Python 3** field, or set with the
-`PDB_PYTHON_TOOLS_PYTHON` environment variable.
+The tools need Python 3 with numpy and scipy:
+the tools are run as a subprocess under the interpreter recorded at install
+time. It can be changed in the dialog's **Python 3** field, or set with the
+`PDB_PYTHON_TOOLS_PYTHON` environment variable. When nothing has been recorded
+and Coot 1's own Python does have the tools, that is what the dialog offers.
 
-`--install` refuses to replace an existing
-`~/.coot-preferences/pdb_python_tools.py` unless `--force` is given. Use
-`--symlink` to link to the installed package instead of copying it, so the
-extension follows package upgrades, and `--dir` to install somewhere other than
-`~/.coot-preferences` (the settings file stays in `~/.coot-preferences`, which
-is the one place the extension knows to look for it).
+`--install` refuses to replace an existing `pdb_python_tools.py` unless
+`--force` is given. Use `--symlink` to link to the installed package instead of
+copying it, so the extension follows package upgrades, and `--dir` to install
+into some other directory (the settings file always stays in
+`~/.config/pdb_python_tools`).
 
 ## Usage examples
 

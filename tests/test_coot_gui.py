@@ -1,16 +1,20 @@
 """
 Tests for the Coot GUI extension and its installer.
 
-The dialog itself needs the PyGTK that Coot embeds, so what is covered here is
-everything around it: that the options the GUI offers are really accepted by the
-tools, that the extension file stays loadable and inert outside Coot, and that
-the installer puts it where Coot looks for it.
+The dialog itself needs the GTK that Coot embeds -- PyGTK in Coot 0.9,
+PyGObject in Coot 1 -- so what is covered here is everything around it: that
+the options the GUI offers are really accepted by the tools, that the extension
+file stays loadable and inert outside Coot, that it picks the right GTK and the
+right kind of menu for the Coot it is in, and that the installer puts it where
+each Coot looks for it.
 """
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -91,7 +95,7 @@ class TestToolSpecs:
 
 
 class TestExtensionFile:
-    """The file runs under Coot's Python 2, and must be inert outside Coot."""
+    """The file runs under Coot 0.9's Python 2, and must be inert outside Coot."""
 
     def test_importing_it_does_nothing_outside_coot(self, capsys):
         extension._install_menu_quietly()
@@ -114,6 +118,47 @@ class TestExtensionFile:
     def test_environment_that_coot_sets_is_dropped(self):
         for name in ("PYTHONHOME", "PYTHONPATH"):
             assert name in extension._ENV_TO_DROP
+
+    def test_a_module_that_raises_on_import_is_not_fatal(self, tmp_path, monkeypatch):
+        # Coot 0.9 without graphics has a coot_utils that raises a NameError on
+        # import; looking a function up must survive that
+        (tmp_path / "coot_utils.py").write_text("raise NameError('is_protein_chain_p')\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, "coot_utils", raising=False)
+        assert extension._coot_function("molecule_number_list") is None
+
+
+class TestToolkit:
+    """Which GTK the extension talks to depends on which Coot it is in."""
+
+    def test_pygtk_is_used_when_coot_09_embeds_it(self, monkeypatch):
+        gtk = types.ModuleType("gtk")
+        gtk.pygtk_version = (2, 24, 0)
+        monkeypatch.setitem(sys.modules, "gtk", gtk)
+        toolkit = extension._make_toolkit()
+        assert toolkit.version == "gtk2"
+        assert toolkit.gtk is gtk
+
+    def test_pygobjects_stand_in_gtk_is_not_pygtk(self, monkeypatch):
+        # PyGObject installs a "gtk" module that imports and then raises on every
+        # attribute; taking it for PyGTK is how a Coot 1 run used to break
+        monkeypatch.setitem(sys.modules, "gtk", types.ModuleType("gtk"))
+        monkeypatch.setitem(sys.modules, "gi", None)
+        assert extension._make_toolkit() is None
+
+    def test_no_gtk_at_all(self, monkeypatch):
+        for name in ("gtk", "gi"):
+            monkeypatch.setitem(sys.modules, name, None)
+        assert extension._make_toolkit() is None
+
+    def test_the_toolkit_is_looked_for_once(self, monkeypatch):
+        monkeypatch.setattr(extension, "_TOOLKIT", [])
+        calls = []
+        monkeypatch.setattr(extension, "_make_toolkit",
+                            lambda: calls.append(1) or "toolkit")
+        assert extension._toolkit() == "toolkit"
+        assert extension._toolkit() == "toolkit"
+        assert len(calls) == 1
 
 
 def tool_by_module(module):
@@ -368,7 +413,9 @@ class TestConfig:
                             str(blocked / extension.CONFIG_NAME))
         assert extension.save_config({"python": "/opt/py3"}) is None
 
-    def test_default_python_falls_back_to_python3(self):
+    def test_default_python_falls_back_to_python3(self, monkeypatch):
+        monkeypatch.setattr(extension, "embedded_interpreter_has_the_tools",
+                            lambda: False)
         assert extension.default_python() == "python3"
 
     def test_default_python_comes_from_the_config(self):
@@ -379,6 +426,42 @@ class TestConfig:
         extension.save_config({"python": "/opt/py3"})
         monkeypatch.setenv("PDB_PYTHON_TOOLS_PYTHON", "/usr/bin/python3")
         assert extension.default_python() == "/usr/bin/python3"
+
+    def test_coot_1s_own_python_is_offered_when_it_has_the_tools(self, monkeypatch):
+        # Coot 1 embeds a Python 3: when the tools are installed in it, it is
+        # the obvious default and nothing has to be set up at all
+        monkeypatch.setattr(extension, "embedded_interpreter_has_the_tools",
+                            lambda: True)
+        assert extension.default_python() == sys.executable
+
+    def test_a_recorded_interpreter_wins_over_coots_own(self, monkeypatch):
+        monkeypatch.setattr(extension, "embedded_interpreter_has_the_tools",
+                            lambda: True)
+        extension.save_config({"python": "/opt/py3"})
+        assert extension.default_python() == "/opt/py3"
+
+
+class TestEmbeddedInterpreter:
+    @needs_scipy
+    def test_this_interpreter_has_the_tools(self):
+        # the tests run in exactly the kind of interpreter the dialog looks for
+        assert extension.embedded_interpreter_has_the_tools() is True
+
+    def test_a_missing_dependency_rules_it_out(self, monkeypatch):
+        import importlib.util
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name: None if name == "scipy" else object())
+        assert extension.embedded_interpreter_has_the_tools() is False
+
+    def test_the_modules_are_looked_up_not_imported(self, monkeypatch):
+        # pulling numpy and scipy into a running Coot to answer a question about
+        # the dialog's default would be a poor trade
+        import importlib.util
+        looked_up = []
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name: looked_up.append(name) or object())
+        assert extension.embedded_interpreter_has_the_tools() is True
+        assert looked_up == ["pdb_python_tools", "numpy", "scipy"]
 
 
 class TestInstaller:
@@ -417,9 +500,11 @@ class TestInstaller:
         assert coot_setup.CONFIG_PATH == extension.CONFIG_PATH
         assert coot_setup.CONFIG_NAME == extension.CONFIG_NAME
 
-    def test_the_settings_sit_next_to_the_extension(self):
-        assert os.path.dirname(coot_setup.CONFIG_PATH) == coot_setup.DEFAULT_COOT_DIR
-        # Coot runs the *.py it finds there, so the settings must not be one
+    def test_the_settings_stay_out_of_coots_own_directories(self):
+        # One settings file has to serve both Coots, which read different
+        # directories -- and Coot runs every *.py it finds in them
+        for directory in (coot_setup.COOT_09_DIR, coot_setup.COOT_1_DIR):
+            assert os.path.dirname(coot_setup.CONFIG_PATH) != directory
         assert not coot_setup.CONFIG_PATH.endswith(".py")
 
     def test_records_this_interpreter(self, tmp_path):
@@ -456,6 +541,117 @@ class TestInstaller:
             cwd=REPO_ROOT, capture_output=True, text=True)
         assert result.returncode != 0
         assert "--install" in result.stderr
+
+    def test_cli_installs_and_records_where_it_is_told(self, tmp_path):
+        # XDG_CONFIG_HOME is where the settings go, and where Coot 1 would read
+        # the extension from, so this run touches nothing outside tmp_path
+        environment = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path / "config"))
+        result = subprocess.run(
+            [sys.executable, "-m", "pdb_python_tools.coot_setup", "--install",
+             "--coot", "1"],
+            cwd=REPO_ROOT, capture_output=True, text=True, env=environment)
+        assert result.returncode == 0, result.stderr
+        # Coot 1 runs the scripts in XDG_CONFIG_HOME itself
+        installed = tmp_path / "config" / coot_setup.INSTALLED_NAME
+        settings = tmp_path / "config" / "pdb_python_tools" / coot_setup.CONFIG_NAME
+        assert installed.exists()
+        assert json.loads(settings.read_text())["python"] == sys.executable
+
+
+class TestInstallDirectories:
+    """Which Coot's startup directory the extension is installed into."""
+
+    def test_a_named_coot_gets_its_own_directory(self):
+        assert coot_setup.install_directories("0.9") == [coot_setup.COOT_09_DIR]
+        assert coot_setup.install_directories("1") == [coot_setup.COOT_1_DIR]
+        assert coot_setup.install_directories("both") == [coot_setup.COOT_09_DIR,
+                                                          coot_setup.COOT_1_DIR]
+
+    def test_the_directories_are_the_ones_coot_reads(self):
+        # Coot 0.9 runs ~/.coot-preferences/*.py, Coot 1 the *.py in its XDG
+        # configuration directory
+        assert os.path.basename(coot_setup.COOT_09_DIR) == ".coot-preferences"
+        assert coot_setup.COOT_1_DIR == coot_setup.coot_1_dir()
+
+    def test_coot_1_falls_back_to_config_coot(self, monkeypatch):
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        assert coot_setup.coot_1_dir() == os.path.expanduser(
+            os.path.join("~", ".config", "Coot"))
+
+    def test_coot_1_takes_xdg_config_home_as_it_stands(self, monkeypatch, tmp_path):
+        # Coot 1 reads that directory itself: it adds no directory of its own
+        # under it, whatever the XDG convention says
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        assert coot_setup.coot_1_dir() == str(tmp_path)
+
+    def test_the_settings_follow_xdg_config_home(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        assert coot_setup._config_home() == str(tmp_path)
+
+    def test_auto_picks_the_coots_that_are_there(self, tmp_path, monkeypatch):
+        here = tmp_path / "coot1"
+        here.mkdir()
+        monkeypatch.setattr(coot_setup, "COOT_09_DIR", str(tmp_path / "nowhere"))
+        monkeypatch.setattr(coot_setup, "COOT_1_DIR", str(here))
+        assert coot_setup.install_directories() == [str(here)]
+
+    def test_auto_installs_for_both_when_neither_is_there(self, tmp_path, monkeypatch):
+        # A directory can be made before the Coot that reads it, so a machine
+        # without either is not a machine without Coot
+        missing = [str(tmp_path / "none-0.9"), str(tmp_path / "none-1")]
+        monkeypatch.setattr(coot_setup, "COOT_09_DIR", missing[0])
+        monkeypatch.setattr(coot_setup, "COOT_1_DIR", missing[1])
+        assert coot_setup.install_directories() == missing
+
+
+class TestMenu:
+    """
+    The menu is built differently in each Coot: 0.9 takes menu items in its menu
+    bar, Coot 1 takes a menu button on the toolbar, driven by actions.
+    """
+
+    def test_coot_09_gets_a_menu_in_the_menu_bar(self, fake_coot):
+        added = []
+        fake_coot("coot_menubar_menu", lambda label: "menu:" + label)
+        fake_coot("add_simple_coot_menu_menuitem",
+                  lambda menu, label, callback: added.append((menu, label)))
+        assert extension.add_pdb_python_tools_menu() is True
+        assert [label for _menu, label in added] == [t.label for t in extension.TOOLS]
+        assert {menu for menu, _label in added} == {"menu:" + extension.MENU_NAME}
+
+    def test_coot_1_gets_a_menu_button_on_the_toolbar(self, fake_coot):
+        # Coot 1 has coot_menubar_menu but not add_simple_coot_menu_menuitem, so
+        # the menu bar path has to decline rather than half-build a menu
+        added = []
+        fake_coot("coot_menubar_menu", lambda label: "menu:" + label)
+        fake_coot("attach_module_menu_button", lambda name: "gio-menu:" + name)
+        fake_coot("add_simple_action_to_menu",
+                  lambda menu, label, action, callback: added.append((label, action)))
+        assert extension.add_pdb_python_tools_menu() is True
+        assert added == [(tool.label, extension._action_name(tool))
+                         for tool in extension.TOOLS]
+
+    def test_no_menu_without_a_coot_to_add_it_to(self):
+        assert extension.add_pdb_python_tools_menu() is False
+
+    def test_action_names_are_names_gio_accepts(self):
+        # Gio only allows alphanumerics, '-' and '.', which rules out the
+        # underscores in the module names
+        for tool in extension.TOOLS:
+            assert re.match(r"^[A-Za-z0-9.-]+$", extension._action_name(tool))
+        names = [extension._action_name(tool) for tool in extension.TOOLS]
+        assert len(set(names)) == len(names)
+
+    def test_a_menu_entry_opens_its_dialog(self, monkeypatch):
+        opened = []
+        monkeypatch.setattr(extension, "ToolDialog",
+                            lambda tool: types.SimpleNamespace(
+                                show=lambda: opened.append(tool)))
+        tool = extension.TOOLS[0]
+        # Coot 1 calls it with the action and its parameter, Coot 0.9 with none
+        extension._tool_callback(tool)("action", None)
+        extension._tool_callback(tool)()
+        assert opened == [tool, tool]
 
 
 @pytest.fixture

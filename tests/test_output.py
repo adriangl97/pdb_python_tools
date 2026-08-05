@@ -3,6 +3,8 @@ Tests for the shared output layer: cell formatting, the TSV/CSV writer, the
 generated Coot script and the common argparse flags.
 """
 import argparse
+import sys
+import types
 
 import pytest
 
@@ -216,6 +218,78 @@ class TestWriteCootScript:
         target = tmp_path / "coot.py"
         write_coot_script(MARKERS, "it's a \"title\"", str(target))
         compile(target.read_text(), str(target), "exec")
+
+
+def run_generated_script(tmp_path, markers=None):
+    """
+    Run a generated script the way Coot would, and hand back its namespace.
+
+    Outside Coot it only prints its list, so what is left to look at is how it
+    would have found Coot and GTK.
+    """
+    target = tmp_path / "coot.py"
+    write_coot_script(MARKERS if markers is None else markers, "t", str(target),
+                      force=True)
+    namespace = {"__name__": "not_main"}
+    exec(compile(target.read_text(), str(target), "exec"), namespace)
+    return namespace
+
+
+@pytest.fixture
+def without_gtk(monkeypatch):
+    """A process with neither PyGTK nor PyGObject, whatever the test machine has."""
+    for name in ("gtk", "gi"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+
+class TestGeneratedScriptFindsCoot:
+    """
+    The script has to work in Coot 0.9 and Coot 1, which agree on nothing:
+    Python 2 and PyGTK on one side, Python 3 and PyGObject on the other.
+    """
+
+    def test_coot_09_keeps_its_functions_in_the_scripts_namespace(self, tmp_path,
+                                                                  without_gtk):
+        namespace = run_generated_script(tmp_path)
+        centred = []
+        namespace["set_rotation_centre"] = lambda x, y, z: centred.append((x, y, z))
+        namespace["_recentre_function"]()(1.0, 2.0, 3.0)
+        assert centred == [(1.0, 2.0, 3.0)]
+
+    def test_coot_1_keeps_them_in_the_coot_module(self, tmp_path, monkeypatch,
+                                                 without_gtk):
+        coot = types.ModuleType("coot")
+        centred = []
+        coot.set_rotation_centre = lambda x, y, z: centred.append((x, y, z))
+        monkeypatch.setitem(sys.modules, "coot", coot)
+        namespace = run_generated_script(tmp_path)
+        namespace["_recentre_function"]()(1.0, 2.0, 3.0)
+        assert centred == [(1.0, 2.0, 3.0)]
+
+    def test_no_coot_no_recentring(self, tmp_path, monkeypatch, without_gtk):
+        monkeypatch.setitem(sys.modules, "coot", None)
+        namespace = run_generated_script(tmp_path)
+        assert namespace["_recentre_function"]() is None
+
+    def test_the_list_is_printed_when_there_is_no_coot(self, tmp_path, capsys,
+                                                      without_gtk):
+        run_generated_script(tmp_path)
+        assert "A 10 SER" in capsys.readouterr().out
+
+    def test_pygtk_is_recognised(self, tmp_path, monkeypatch):
+        gtk = types.ModuleType("gtk")
+        gtk.pygtk_version = (2, 24, 0)
+        monkeypatch.setitem(sys.modules, "gtk", gtk)
+        namespace = run_generated_script(tmp_path)
+        assert namespace["_gtk"]() == (gtk, "pygtk")
+
+    def test_pygobjects_stand_in_gtk_is_not_pygtk(self, tmp_path, monkeypatch):
+        # PyGObject installs a "gtk" module that imports and then raises on every
+        # attribute; taking it for PyGTK is how a Coot 1 run used to break
+        monkeypatch.setitem(sys.modules, "gtk", types.ModuleType("gtk"))
+        monkeypatch.setitem(sys.modules, "gi", None)
+        namespace = run_generated_script(tmp_path)
+        assert namespace["_gtk"]() == (None, None)
 
 
 class TestAddOutputArgs:
