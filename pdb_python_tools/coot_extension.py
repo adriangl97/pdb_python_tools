@@ -8,7 +8,8 @@ entry opens a dialog where the input structures are picked from the models
 already open in Coot, the tool's options are filled in, and "Run" starts the
 tool. The results come back as the clickable list the tools already write with
 --coot, opened automatically once the run finishes: clicking a row recenters
-the view on that residue.
+the view on that residue. atom_tracker also opens a bar graph of the
+displacement, one chart per chain, whose bars recenter the view in the same way.
 
 The tools need numpy/scipy, so they are run as a subprocess under an external Python 3
 interpreter. That interpreter is taken from, in order: the entry in the dialog,
@@ -290,7 +291,8 @@ TOOLS = [
           Option("float", "--min-change", "Minimum displacement", 0.01,
                  tooltip="only report residues that moved more than this")],
          tooltip="Per-residue coordinate change between two equivalent, "
-                 "pre-aligned models"),
+                 "pre-aligned models; the results come back as a clickable "
+                 "list and a bar graph of the displacement per chain"),
     Tool("find_contacts", "Find contacts",
          ["Model"],
          [Option("chain", "-c", "Chain", required=True),

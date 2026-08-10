@@ -416,6 +416,51 @@ class TestAtomTracker:
         compile(target.read_text(), str(target), "exec")
         assert "A 1 SER" in target.read_text()
 
+    def test_coot_script_carries_the_bar_graph(self, pair, tmp_path):
+        target = tmp_path / "coot.py"
+        run_tool("atom_tracker", *pair, "--coot", target)
+        namespace = {"__name__": "not_main"}
+        exec(compile(target.read_text(), str(target), "exec"), namespace)
+        # the reported residues again, split into chain and residue number so
+        # the script can draw one graph per chain, largest displacement first,
+        # each carrying the max, the average and the CA/C1' displacement
+        assert [(entry[1], entry[2], tuple(round(v, 2) for v in entry[3]))
+                for entry in namespace["GRAPH"]] == [("A", 1, (3.0, 1.0, 0.0)),
+                                                     ("B", 1, (2.0, 2.0, 2.0))]
+        assert namespace["GRAPH_SERIES"] == ["Max displacement (Å)",
+                                             "Average displacement (Å)",
+                                             "CA/C1' displacement (Å)"]
+
+    def test_the_graph_opens_on_the_average(self, pair, tmp_path):
+        target = tmp_path / "coot.py"
+        run_tool("atom_tracker", *pair, "--coot", target)
+        namespace = {"__name__": "not_main"}
+        exec(compile(target.read_text(), str(target), "exec"), namespace)
+        assert namespace["GRAPH_SELECTED"] == [1]
+        assert namespace["GRAPH_SERIES"][1] == "Average displacement (Å)"
+
+    def test_a_residue_without_a_ca_has_no_ca_value_to_plot(self, tmp_path):
+        # the CA/C1' series is the table's last column, so it is NA here too
+        first = write_pdb(tmp_path / "a.pdb", [
+            pdb_atom_line(1, "N", "SER", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(2, "OG", "SER", "A", 1, 2.0, 0.0, 0.0)])
+        second = write_pdb(tmp_path / "b.pdb", [
+            pdb_atom_line(1, "N", "SER", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(2, "OG", "SER", "A", 1, 5.0, 0.0, 0.0)])
+        target = tmp_path / "coot.py"
+        run_tool("atom_tracker", first, second, "--coot", target)
+        namespace = {"__name__": "not_main"}
+        exec(compile(target.read_text(), str(target), "exec"), namespace)
+        assert namespace["GRAPH"][0][3][2] is None
+        assert namespace["GRAPH"][0][4][2] == "NA"
+
+    def test_residues_below_min_change_stay_out_of_the_graph(self, pair, tmp_path):
+        target = tmp_path / "coot.py"
+        run_tool("atom_tracker", *pair, "--coot", target, "--min-change", "2.5")
+        namespace = {"__name__": "not_main"}
+        exec(compile(target.read_text(), str(target), "exec"), namespace)
+        assert [entry[1] for entry in namespace["GRAPH"]] == ["A"]
+
     def test_hetatm_and_hydrogen_flags_accepted(self, pair):
         assert run_tool("atom_tracker", *pair, "-HET", "-hy").returncode == 0
 
@@ -504,6 +549,15 @@ class TestFindContacts:
         target = tmp_path / "coot.py"
         run_tool("find_contacts", two_chains, "-c", "A", "-d", "4.0", "--coot", target)
         compile(target.read_text(), str(target), "exec")
+
+    def test_no_bar_graph_for_contacts(self, two_chains, tmp_path):
+        # only atom_tracker has a per-residue value to plot, so the other tools
+        # keep the clickable list on its own
+        target = tmp_path / "coot.py"
+        run_tool("find_contacts", two_chains, "-c", "A", "-d", "4.0", "--coot", target)
+        namespace = {"__name__": "not_main"}
+        exec(compile(target.read_text(), str(target), "exec"), namespace)
+        assert namespace["GRAPH"] == []
 
 
 @needs_scipy
