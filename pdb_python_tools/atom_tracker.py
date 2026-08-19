@@ -16,6 +16,11 @@ from .core import write_coot_script
 import argparse
 import sys
 
+# What the bars of the Coot graph can be drawn from
+GRAPH_SERIES = ("Max displacement (Å)", "Average displacement (Å)",
+                "CA/C1' displacement (Å)")
+GRAPH_DEFAULT_SERIES = 1
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -53,6 +58,7 @@ def main():
               "Average_distance", "CA/C1'_distance"]
     rows = []
     markers = []
+    graph = []
     for resi in tracked:
         if resi.max_xyz.xyz_change > args.min_change:
             # None (printed as NA) when the residue has no real CA/C1' atom in
@@ -66,6 +72,12 @@ def main():
                 label = "%s %s %s" % (resi.chainid, resi.seqid, resi.restyp)
                 markers.append((label, resi.max_xyz.xyz_change, "Å",
                                 center.x, center.y, center.z))
+                # Same residues, but kept by chain and residue number, and with
+                # every column the graph can draw, so the Coot script can plot
+                # them per chain and switch between them
+                graph.append((label, resi.chainid, resi.seqid,
+                              (resi.max_xyz.xyz_change, resi.average_xyz, ca),
+                              "Å", center.x, center.y, center.z))
 
     try:
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
@@ -73,7 +85,10 @@ def main():
         if args.coot:
             write_coot_script(markers, "atom_tracker: max displacement", args.coot,
                               force=args.force, precision=args.precision,
-                              full_precision=args.full_precision)
+                              full_precision=args.full_precision, graph=graph,
+                              graph_title="atom_tracker: displacement per residue",
+                              graph_series=GRAPH_SERIES,
+                              graph_selected=GRAPH_DEFAULT_SERIES)
     except FileExistsError as e:
         sys.exit(str(e))
 

@@ -3,6 +3,7 @@ import math
 import csv
 import gzip
 import os
+import re
 import sys
 from dataclasses import dataclass, field, replace
 from typing import List, Optional
@@ -858,7 +859,9 @@ def add_output_args(parser):
     parser.add_argument('--coot', default=None, metavar='PATH',
                         help='also write a Coot (0.9 or 1) Python script '
                              'to PATH; opening it in Coot shows the same results as a '
-                             'clickable list that recenters the view on each residue '
+                             'clickable list that recenters the view on each residue, '
+                             'and for atom_tracker a second window with a bar graph '
+                             'of the displacement per chain '
                              "(refuses to overwrite unless --force is given)")
 
 def _format_cell(value, precision, full_precision):
@@ -927,6 +930,27 @@ def _exit_on_broken_pipe():
     raise SystemExit(1)
 
 
+# Bar colours for the graph the generated script can draw, following the
+# green -> yellow -> orange -> red ladder, the last bound is
+# None and catches everything above.
+COOT_GRAPH_BANDS = ((0.5, "#55dd55"), (1.0, "#eecc22"),
+                    (2.0, "#ee9933"), (None, "#dd4444"))
+
+
+_LEADING_INT = re.compile(r"-?\d+")
+
+
+def _residue_number(seqid):
+    """
+    The residue number in a seqid, as an int for plotting.
+
+    An insertion code ("10A") keeps the number it is attached to; a seqid with
+    no number at all gives None, and its residue is left out of the graph.
+    """
+    match = _LEADING_INT.match(str(seqid).strip())
+    return int(match.group()) if match else None
+
+
 # Template for the generated Coot script. It is Python-2 compatible, so that
 # Coot 0.9 (Python 2, PyGTK) and Coot 1 (Python 3, PyGObject) can both run it,
 # and only relies on `set_rotation_centre`
@@ -938,11 +962,31 @@ _COOT_TEMPLATE = '''#!/usr/bin/env python
 # listed residue's CA/C1' (or, for find_contacts, the contact midpoint).
 from __future__ import print_function
 
+import math
+
 TITLE = {title!r}
 
 # Each entry: (label, value_text, x, y, z)
 MARKERS = [
 {markers}
+]
+
+# The bar graph, drawn in a second window when it is not empty. Each entry
+# holds one value per series, in the order of GRAPH_SERIES:
+#   (label, chain, residue number, values, value_texts, x, y, z)
+# A value of None means that residue has none of that kind, and gets no bar.
+GRAPH_TITLE = {graph_title!r}
+GRAPH_SERIES = [
+{series}
+]
+GRAPH_SELECTED = [{selected}]   # which series the bars stand for; "Value..." moves it
+GRAPH = [
+{graph}
+]
+
+# Bar colours, lowest band first: (upper bound, colour), the last bound None
+GRAPH_BANDS = [
+{bands}
 ]
 
 
@@ -1101,16 +1145,692 @@ def show_coot_dialog():
         window.show_all()
 
 
+# ---------------------------------------------------------------------------
+# The bar graph
+# ---------------------------------------------------------------------------
+
+
+GRAPH_MIN_WIDTH = 560                        # the legend, and the window itself
+GRAPH_HEIGHT = 130
+GRAPH_MARGINS = (48.0, 14.0, 10.0, 26.0)     # left, right, top, bottom
+GRAPH_CHAIN_MIN_WIDTH = 240
+
+# What the "Options" window can change. Each is a one-item list, so that the
+# window can drop a new value into it without the drawing code having to be
+# handed it. The defaults are the graph as it opens.
+#
+# Every chain is drawn at the same bar width, so one bar means the same as any
+# other and two chains can be held against each other along x. A chain that
+# would need a graph wider than GRAPH_MAX_WIDTH is the one exception: there the
+# bar and the gap are scaled down together, keeping their proportion, so that
+# asking for a wider bar still draws a wider bar up to the point where the
+# residues fill the canvas and nothing wider will fit.
+GRAPH_BAR_WIDTH = [7.0]
+GRAPH_TICK_RESIDUES = [10]   # residues from one x-axis number to the next
+GRAPH_Y_STEP = [1.0]         # angstrom from one gridline to the next
+GRAPH_YMAX = [None]          # one top for every chain, or None for its own
+GRAPH_MAX_WIDTH = [30000]    # the widest one chain's graph may be drawn
+
+GRAPH_BAR_GAP = 2.0          # clear space between two neighbouring bars
+GRAPH_BAR_MAX_WIDTH = 60.0
+# GTK 2 keeps widget coordinates in 16 bits, so nothing may be drawn wider
+GRAPH_WIDTH_LIMIT = 32000
+GRAPH_TICK_MIN_GAP = 30.0    # x numbers closer than this are thinned out
+GRAPH_Y_LABEL_MIN_GAP = 11.0 # and so are y numbers
+GRAPH_Y_MAX_LINES = 500      # a floor under a very small gridline step
+
+
+def _bar_pitch():
+    """Points from one residue to the next: a bar and the gap after it."""
+    return GRAPH_BAR_WIDTH[0] + GRAPH_BAR_GAP
+
+
+def _selected():
+    """Which of GRAPH_SERIES the bars are drawn from."""
+    return GRAPH_SELECTED[0]
+
+
+def _entry_value(entry):
+    """
+    The number the shown series holds for one residue.
+
+    None when that residue has no such value gets no bar.
+    """
+    return entry[3][_selected()]
+
+
+def _entry_text(entry):
+    """The same number, ready to show."""
+    return entry[4][_selected()]
+
+
+def _band_colour(value):
+    """The bar colour for one value, from the GRAPH_BANDS ladder."""
+    for upper, colour in GRAPH_BANDS:
+        if upper is None or value < upper:
+            return colour
+    return GRAPH_BANDS[-1][1]
+
+
+def _rgb(colour):
+    """'#rrggbb' as the three 0-1 components cairo takes."""
+    colour = colour.lstrip("#")
+    return (int(colour[0:2], 16) / 255.0,
+            int(colour[2:4], 16) / 255.0,
+            int(colour[4:6], 16) / 255.0)
+
+
+def _ymax_of(entries):
+    """
+    The top of the scale for `entries`, rounded up to a whole gridline.
+
+    Each chain gets its own, worked out from the series on show. A top set in the Options window
+    overrides all of that, and every chain is drawn against it.
+    """
+    if GRAPH_YMAX[0] is not None:
+        return GRAPH_YMAX[0]
+    step = GRAPH_Y_STEP[0]
+    values = [_entry_value(entry) for entry in entries]
+    values = [value for value in values if value is not None]
+    highest = max(values) if values else 0.0
+    return max(step, math.ceil(highest / step) * step)
+
+
+def _graph_chains():
+    """The graph entries grouped by chain, in the order the chains appear."""
+    order = []
+    by_chain = dict()
+    for entry in GRAPH:
+        chain = entry[1]
+        if chain not in by_chain:
+            by_chain[chain] = []
+            order.append(chain)
+        by_chain[chain].append(entry)
+    return [(chain, by_chain[chain]) for chain in order]
+
+
+class _ChainGraph(object):
+    """One chain's bar chart: it draws itself and answers clicks on its bars."""
+
+    def __init__(self, chain, entries):
+        self.chain = chain
+        self.entries = entries
+        numbers = [entry[2] for entry in entries]
+        self.first = min(numbers)
+        self.last = max(numbers)
+        # (left edge, right edge, entry) per bar, refreshed on every draw so
+        # that a resized window still maps a click to the right residue
+        self.bars = []
+
+    def span(self):
+        """Residue numbers covered."""
+        return max(1, self.last - self.first)
+
+    def width(self):
+        """
+        The width this chain asks for, at the shared points-per-residue.
+
+        A short chain gets a short graph rather than a stretched one to keep the bars of every chain the same width.
+        """
+        left, right, _top, _bottom = GRAPH_MARGINS
+        needed = (left + right + self.span() * _bar_pitch()
+                  + GRAPH_BAR_WIDTH[0])
+        return int(max(GRAPH_CHAIN_MIN_WIDTH, min(GRAPH_MAX_WIDTH[0], needed)))
+
+    def size(self):
+        """The width and height this chain's graph asks for."""
+        return (self.width(), GRAPH_HEIGHT)
+
+    def _scale(self, plot_w):
+        """
+        Points per residue, and the bar width, for this draw.
+
+        Both are what the Options window asks for, unless this chain needs
+        more room than the canvas has.
+        """
+        pitch = _bar_pitch()
+        bar_w = GRAPH_BAR_WIDTH[0]
+        # What is left once the last bar has its own width to sit in
+        room = max(0.0, plot_w - bar_w)
+        needed = self.span() * pitch
+        if needed > room:
+            factor = room / needed
+            pitch = pitch * factor
+            bar_w = max(1.0, bar_w * factor)
+        return pitch, bar_w
+
+    def squeezed(self, plot_w):
+        """Whether this chain had to be scaled down to fit the canvas."""
+        _pitch, bar_w = self._scale(plot_w)
+        return bar_w < GRAPH_BAR_WIDTH[0] - 0.01
+
+    def draw(self, cr, width, height):
+        left, right, top, bottom = GRAPH_MARGINS
+        plot_w = max(1.0, width - left - right)
+        plot_h = max(1.0, height - top - bottom)
+        pitch, bar_w = self._scale(plot_w)
+        # The axes stop where the residues do, so a short chain in a wide
+        # window is a short graph and not a long empty one
+        used_w = min(plot_w, self.span() * pitch + bar_w)
+        ymax = self.ymax()
+        cr.set_line_width(1.0)
+        cr.select_font_face("Sans")
+        cr.set_font_size(9.0)
+        cr.set_source_rgb(1.0, 1.0, 1.0)
+        cr.rectangle(0.0, 0.0, width, height)
+        cr.fill()
+        self._draw_y_axis(cr, left, top, used_w, plot_h, ymax)
+        self._draw_bars(cr, left, top, plot_h, pitch, bar_w, ymax)
+        self._draw_x_axis(cr, left, top, used_w, plot_h, pitch)
+        if bar_w < GRAPH_BAR_WIDTH[0] - 0.01:
+            # so that a bar width that cannot be honoured does not look as
+            # though the setting was ignored
+            text = "bars %.1f pt: too many residues for the graph width" % bar_w
+            cr.set_source_rgb(0.55, 0.55, 0.55)
+            cr.move_to(left + used_w - cr.text_extents(text)[4] - 4.0, top + 9.0)
+            cr.show_text(text)
+
+    def ymax(self):
+        """The top of this chain's own scale."""
+        return _ymax_of(self.entries)
+
+    def _label_every(self, plot_h, ymax):
+        """How many gridlines to a number, so that the numbers stay apart."""
+        gap = plot_h / (ymax / GRAPH_Y_STEP[0])
+        for candidate in (1, 2, 5, 10, 20, 50):
+            if gap * candidate >= GRAPH_Y_LABEL_MIN_GAP:
+                return candidate
+        return 100
+
+    def _draw_y_axis(self, cr, left, top, used_w, plot_h, ymax):
+        """A gridline every step, up to this chain's maximum."""
+        step = GRAPH_Y_STEP[0]
+        # A step far smaller than the scale would draw thousands of lines
+        lines = int(min(GRAPH_Y_MAX_LINES, round(ymax / step, 6)))
+        every = self._label_every(plot_h, ymax)
+        for index in range(lines + 1):
+            value = index * step
+            y = top + plot_h - (value / ymax) * plot_h
+            cr.set_source_rgb(0.87, 0.87, 0.87)
+            cr.move_to(left, y)
+            cr.line_to(left + used_w, y)
+            cr.stroke()
+            if index % every:
+                continue
+            text = "%g" % round(value, 6)
+            cr.set_source_rgb(0.35, 0.35, 0.35)
+            cr.move_to(left - 6.0 - cr.text_extents(text)[4], y + 3.0)
+            cr.show_text(text)
+
+    def _draw_bars(self, cr, left, top, plot_h, pitch, bar_w, ymax):
+        """One bar per residue, at its own residue number along the chain."""
+        self.bars = []
+        for entry in self.entries:
+            value = _entry_value(entry)
+            if value is None:
+                continue                # nothing to draw for this residue here
+            bar_h = plot_h * min(1.0, value / ymax)
+            x = left + (entry[2] - self.first) * pitch
+            cr.set_source_rgb(*_rgb(_band_colour(value)))
+            cr.rectangle(x, top + plot_h - bar_h, bar_w, bar_h)
+            cr.fill()
+            self.bars.append((x, x + bar_w, entry))
+
+    def _tick_step(self, pitch):
+        """
+        How many residues one x-axis label is from the next.
+
+        The step from the Options window, unless that many would not be far
+        enough apart to read, which happens on a chain squeezed into
+        GRAPH_MAX_WIDTH: there it goes up in whole steps until they fit.
+        """
+        step = float(GRAPH_TICK_RESIDUES[0])
+        if pitch <= 0.0:
+            return step
+        while step * pitch < GRAPH_TICK_MIN_GAP:
+            step += GRAPH_TICK_RESIDUES[0]
+        return step
+
+    def _draw_x_axis(self, cr, left, top, used_w, plot_h, pitch):
+        """The baseline, numbered every so many residues."""
+        cr.set_source_rgb(0.45, 0.45, 0.45)
+        cr.move_to(left, top + plot_h)
+        cr.line_to(left + used_w, top + plot_h)
+        cr.stroke()
+        cr.set_source_rgb(0.35, 0.35, 0.35)
+        step = self._tick_step(pitch)
+        number = math.ceil(self.first / step) * step
+        numbers = []
+        while number <= self.last:
+            numbers.append(number)
+            number += step
+        # A chain that does not reach a round ten still says where it sits
+        if not numbers:
+            numbers = [self.first]
+        for number in numbers:
+            x = left + (number - self.first) * pitch
+            text = "%d" % int(number)
+            cr.move_to(x - cr.text_extents(text)[4] / 2.0, top + plot_h + 14.0)
+            cr.show_text(text)
+
+    def clicked(self, x):
+        """The entry whose bar is under `x`, or None when no bar is."""
+        for start, end, entry in self.bars:
+            if start - 2.0 <= x <= end + 2.0:
+                return entry
+        return None
+
+
+def _legend_text(index):
+    """The range one colour band stands for, as the legend spells it out."""
+    lower = GRAPH_BANDS[index - 1][0] if index > 0 else None
+    upper = GRAPH_BANDS[index][0]
+    if lower is None:
+        return "< %g" % upper
+    if upper is None:
+        return "> %g" % lower
+    return "%g - %g" % (lower, upper)
+
+
+def _draw_legend(cr, width, height):
+    """A row of swatches naming the band each bar colour stands for."""
+    cr.set_source_rgb(1.0, 1.0, 1.0)
+    cr.rectangle(0.0, 0.0, width, height)
+    cr.fill()
+    cr.select_font_face("Sans")
+    cr.set_font_size(9.0)
+    x = 6.0
+    for index in range(len(GRAPH_BANDS)):
+        cr.set_source_rgb(*_rgb(GRAPH_BANDS[index][1]))
+        cr.rectangle(x, height / 2.0 - 5.0, 12.0, 10.0)
+        cr.fill()
+        text = _legend_text(index)
+        x += 16.0
+        cr.set_source_rgb(0.25, 0.25, 0.25)
+        cr.move_to(x, height / 2.0 + 4.0)
+        cr.show_text(text)
+        x += cr.text_extents(text)[4] + 14.0
+
+
+def _button_press_mask(gtk, kind):
+    """The GDK mask for a button press, however this GTK spells it."""
+    if kind == "pygtk":
+        return gtk.gdk.BUTTON_PRESS_MASK
+    try:
+        from gi.repository import Gdk
+    except ImportError:
+        return 256                  # GDK_BUTTON_PRESS_MASK, 1 << 8 in every GDK
+    return Gdk.EventMask.BUTTON_PRESS_MASK
+
+
+def _drawing_area(gtk, kind, on_draw, on_click):
+    """
+    A DrawingArea calling on_draw(cr, width, height) and on_click(x).
+
+    The three GTKs disagree on both halves: PyGTK draws on an expose event and
+    only hears a click once the button mask is switched on, GTK 3 has a draw
+    signal, and GTK 4 takes a draw function and a click gesture.
+    """
+    area = gtk.DrawingArea()
+    if kind == "gtk4":
+        area.set_draw_func(lambda widget, cr, width, height, *args:
+                           on_draw(cr, width, height))
+        gesture = gtk.GestureClick()
+        gesture.connect("pressed", lambda control, presses, x, y: on_click(x))
+        area.add_controller(gesture)
+        return area
+    if kind == "pygtk":
+        def exposed(widget, event):
+            allocation = widget.get_allocation()
+            on_draw(widget.window.cairo_create(),
+                    allocation.width, allocation.height)
+            return False
+        area.connect("expose-event", exposed)
+    else:
+        area.connect("draw", lambda widget, cr: on_draw(
+            cr, widget.get_allocated_width(), widget.get_allocated_height()))
+    area.add_events(_button_press_mask(gtk, kind))
+    area.connect("button-press-event", lambda widget, event: on_click(event.x))
+    return area
+
+
+def _make_pick(graph, recentre, status):
+    """Return a click handler that recenters on the residue whose bar was hit."""
+    def _pick(x):
+        entry = graph.clicked(x)
+        if entry is None:
+            return
+        recentre(entry[5], entry[6], entry[7])
+        status.set_text("%s    %s" % (entry[0], _entry_text(entry)))
+    return _pick
+
+
+def _hbox(gtk, kind, spacing):
+    """A horizontal box."""
+    if kind == "pygtk":
+        return gtk.HBox(False, spacing)
+    return gtk.Box(orientation=gtk.Orientation.HORIZONTAL, spacing=spacing)
+
+
+def _entry(gtk, text, width_chars=6):
+    """A short text entry, filled in."""
+    entry = gtk.Entry()
+    entry.set_width_chars(width_chars)
+    entry.set_text(text)
+    return entry
+
+
+def _separator(gtk, kind):
+    """A horizontal rule."""
+    if kind == "pygtk":
+        return gtk.HSeparator()
+    return gtk.Separator(orientation=gtk.Orientation.HORIZONTAL)
+
+
+def _refresh(areas):
+    """
+    Put every graph back on the screen with the current settings.
+
+    Each area comes with the size it asks for, or None when it has a fixed
+    one, so that a change of bar width can widen the chains that need it.
+    """
+    for area, size in areas:
+        if size is not None:
+            area.set_size_request(*size())
+        area.queue_draw()
+
+
+def _swatch(gtk, kind, colour):
+    """A small square of one band's colour, which stands in for its name."""
+    def draw(cr, width, height):
+        cr.set_source_rgb(*_rgb(colour))
+        cr.rectangle(0.0, 0.0, width, height)
+        cr.fill()
+    area = _drawing_area(gtk, kind, draw, lambda x: None)
+    area.set_size_request(16, 16)
+    return area
+
+
+class _Rejected(Exception):
+    """One entry of the Options window that cannot be used, and why."""
+
+
+def _positive(text, name, whole=False):
+    """One entry read as a number greater than zero."""
+    text = text.strip()
+    try:
+        value = float(text)
+    except ValueError:
+        raise _Rejected("%s: '%s' is not a number." % (name, text))
+    if value <= 0:
+        raise _Rejected("%s has to be greater than zero." % name)
+    if whole and value != int(value):
+        raise _Rejected("%s has to be a whole number." % name)
+    return value
+
+
+def _apply_options(cutoffs, x_step, y_step, ymax, bar_width, max_width):
+    """
+    Put everything the Options window says into effect.
+
+    Every entry is checked before any of them is applied, so one bad number
+    leaves the graph exactly as it was. `ymax` may be blank, which puts each
+    chain back on a scale of its own. Returns "" when the settings were taken,
+    and what is wrong with them when they were not.
+    """
+    try:
+        values = [_positive(text, "Cutoff") for text in cutoffs]
+        for earlier, later in zip(values, values[1:]):
+            if later <= earlier:
+                raise _Rejected("Each cutoff has to be larger than the one above it.")
+        residues = _positive(x_step, "Residues per label", whole=True)
+        step = _positive(y_step, "Gridline every")
+        width = _positive(bar_width, "Bar width")
+        if width > GRAPH_BAR_MAX_WIDTH:
+            raise _Rejected("Bar width has to be %g or less." % GRAPH_BAR_MAX_WIDTH)
+        canvas = _positive(max_width, "Graph width")
+        if canvas < GRAPH_CHAIN_MIN_WIDTH:
+            raise _Rejected("Graph width has to be %d or more."
+                            % GRAPH_CHAIN_MIN_WIDTH)
+        if canvas > GRAPH_WIDTH_LIMIT:
+            raise _Rejected("Graph width has to be %d or less: a wider one is "
+                            "past what GTK can draw." % GRAPH_WIDTH_LIMIT)
+        top = None
+        if ymax.strip():
+            top = _positive(ymax, "Highest y value")
+    except _Rejected as problem:
+        return str(problem)
+    for index, value in enumerate(values):
+        GRAPH_BANDS[index] = (value, GRAPH_BANDS[index][1])
+    GRAPH_TICK_RESIDUES[0] = int(residues)
+    GRAPH_Y_STEP[0] = step
+    GRAPH_BAR_WIDTH[0] = width
+    GRAPH_MAX_WIDTH[0] = int(canvas)
+    GRAPH_YMAX[0] = top
+    return ""
+
+
+# The side windows are built inside a callback, so they are kept here rather
+# than left to the garbage collector
+_OPEN_WINDOWS = []
+
+
+def _side_window(gtk, kind, title, parent):
+    """An empty window belonging to the graph window."""
+    window = gtk.Window(gtk.WINDOW_TOPLEVEL) if kind == "pygtk" else gtk.Window()
+    window.set_title(title)
+    window.set_transient_for(parent)
+    return window
+
+
+def _show_side_window(kind, window, outer):
+    """Fill one in and put it on the screen, keeping a reference to it."""
+    def forget(*args):
+        if window in _OPEN_WINDOWS:
+            _OPEN_WINDOWS.remove(window)
+
+    _OPEN_WINDOWS.append(window)
+    window.connect("destroy", forget)
+    if kind == "gtk4":
+        window.set_child(outer)
+        window.present()
+    else:
+        window.add(outer)
+        window.show_all()
+    return window
+
+
+def _make_choose(index, window, areas, header):
+    """A button handler that puts series `index` on show and closes `window`."""
+    def _choose(*args):
+        GRAPH_SELECTED[0] = index
+        header.set_text(GRAPH_SERIES[index])
+        _refresh(areas)
+        window.destroy()
+    return _choose
+
+
+def show_value_dialog(gtk, kind, parent, areas, header):
+    """
+    The window that picks which number the bars stand for.
+
+    One button per series in GRAPH_SERIES; picking one redraws the graphs,
+    against a scale worked out afresh for it, and closes the window. Residues
+    with no value in that series simply lose their bar.
+    """
+    window = _side_window(gtk, kind, "Value shown", parent)
+    outer = _box(gtk, kind, 4, border=8)
+    _pack(kind, outer, _label(gtk, kind, "Draw the bars from:"))
+    for index, name in enumerate(GRAPH_SERIES):
+        mark = "* " if index == _selected() else "   "
+        button = _button(gtk, kind, mark + name)
+        button.connect("clicked", _make_choose(index, window, areas, header))
+        _pack(kind, outer, button)
+    close_button = _button(gtk, kind, "Close")
+    close_button.connect("clicked", lambda *args: window.destroy())
+    _pack(kind, outer, close_button)
+    return _show_side_window(kind, window, outer)
+
+
+def _settings_row(gtk, kind, text, value, note=""):
+    """A labelled entry, and the entry itself so it can be read back."""
+    row = _hbox(gtk, kind, 6)
+    label = _label(gtk, kind, text)
+    label.set_size_request(150, -1)
+    _pack(kind, row, label)
+    entry = _entry(gtk, value)
+    _pack(kind, row, entry)
+    if note:
+        _pack(kind, row, _label(gtk, kind, note))
+    return row, entry
+
+
+def show_options_dialog(gtk, kind, parent, areas):
+    """
+    The window that sets out how the graphs are drawn.
+
+    The colour bands, how often each axis is numbered, the top of the y axis
+    and how wide a bar is. Applying redraws `areas` straight away, without
+    running the tool again; the numbers last as long as the graph window does.
+    """
+    window = _side_window(gtk, kind, "Options", parent)
+    outer = _box(gtk, kind, 4, border=8)
+
+    _pack(kind, outer, _label(gtk, kind,
+                              "A bar takes the colour of the band its value falls in."))
+    cutoffs = []
+    for upper, colour in GRAPH_BANDS:
+        row = _hbox(gtk, kind, 6)
+        _pack(kind, row, _swatch(gtk, kind, colour))
+        if upper is None:
+            _pack(kind, row, _label(gtk, kind, "everything above"))
+        else:
+            _pack(kind, row, _label(gtk, kind, "up to"))
+            entry = _entry(gtk, "%g" % upper)
+            cutoffs.append(entry)
+            _pack(kind, row, entry)
+        _pack(kind, outer, row)
+
+    _pack(kind, outer, _separator(gtk, kind))
+    rows = [("Number x axis every", "%g" % GRAPH_TICK_RESIDUES[0], "residues"),
+            ("Gridline every", "%g" % GRAPH_Y_STEP[0], "Å"),
+            ("Highest y value",
+             "" if GRAPH_YMAX[0] is None else "%g" % GRAPH_YMAX[0],
+             "Å  (blank: each chain to its own)"),
+            ("Bar width", "%g" % GRAPH_BAR_WIDTH[0], "points per residue"),
+            ("Widest graph", "%d" % GRAPH_MAX_WIDTH[0],
+             "points  (a longer chain is squeezed into it)")]
+    entries = []
+    for text, value, note in rows:
+        row, entry = _settings_row(gtk, kind, text, value, note)
+        entries.append(entry)
+        _pack(kind, outer, row)
+    message = _label(gtk, kind, "")
+
+    def on_apply(*args):
+        problem = _apply_options([entry.get_text() for entry in cutoffs],
+                                 *[entry.get_text() for entry in entries])
+        if problem:
+            message.set_text(problem)
+            return
+        message.set_text("Applied.")
+        _refresh(areas)
+
+    for entry in cutoffs + entries:
+        entry.connect("activate", on_apply)
+    buttons = _hbox(gtk, kind, 6)
+    apply_button = _button(gtk, kind, "Apply")
+    apply_button.connect("clicked", on_apply)
+    close_button = _button(gtk, kind, "Close")
+    close_button.connect("clicked", lambda *args: window.destroy())
+    _pack(kind, buttons, apply_button)
+    _pack(kind, buttons, close_button)
+    _pack(kind, outer, message)
+    _pack(kind, outer, buttons)
+    return _show_side_window(kind, window, outer)
+
+
+def show_coot_graph():
+    """
+    Open the graph window: one bar chart per chain, next to the list dialog.
+
+    "Value..." picks which number the bars stand for and "Options" how they
+    are drawn; both redraw without running the tool again. Nothing is opened
+    when the run has no graph data, or when this is not running inside a Coot
+    with a GUI.
+    """
+    recentre = _recentre_function()
+    if not GRAPH or recentre is None:
+        return
+    gtk, kind = _gtk()
+    if gtk is None:
+        return
+    window = gtk.Window(gtk.WINDOW_TOPLEVEL) if kind == "pygtk" else gtk.Window()
+    window.set_title(GRAPH_TITLE)
+    window.set_default_size(660, 460)
+    outer = _box(gtk, kind, 2, border=4)
+    _pack(kind, outer, _label(gtk, kind, GRAPH_TITLE))
+    header = _label(gtk, kind, GRAPH_SERIES[_selected()])
+    _pack(kind, outer, header)
+    status = _label(gtk, kind, "Click a bar to recentre on that residue.")
+
+    inner = _box(gtk, kind, 6)
+    areas = []
+    for chain, entries in _graph_chains():
+        graph = _ChainGraph(chain, entries)
+        area = _drawing_area(gtk, kind, graph.draw,
+                             _make_pick(graph, recentre, status))
+        area.set_size_request(*graph.size())
+        # with the size to ask for again when the bar width changes
+        areas.append((area, graph.size))
+        _pack(kind, inner, _label(gtk, kind, "Chain %s" % chain))
+        _pack(kind, inner, area)
+    _pack(kind, outer, _scrolled(gtk, kind, inner), True)
+
+    legend = _drawing_area(gtk, kind, _draw_legend, lambda x: None)
+    legend.set_size_request(GRAPH_MIN_WIDTH, 22)
+    areas.append((legend, None))
+    _pack(kind, outer, legend)
+    _pack(kind, outer, status)
+    buttons = _hbox(gtk, kind, 6)
+    value_button = _button(gtk, kind, "Value...")
+    value_button.connect("clicked", lambda *args:
+                         show_value_dialog(gtk, kind, window, areas, header))
+    options_button = _button(gtk, kind, "Options")
+    options_button.connect("clicked", lambda *args:
+                           show_options_dialog(gtk, kind, window, areas))
+    close_button = _button(gtk, kind, "Close")
+    close_button.connect("clicked", lambda *args: window.destroy())
+    _pack(kind, buttons, value_button)
+    _pack(kind, buttons, options_button)
+    _pack(kind, buttons, close_button)
+    _pack(kind, outer, buttons)
+    if kind == "gtk4":
+        window.set_child(outer)
+        window.present()
+    else:
+        window.add(outer)
+        window.show_all()
+
+
 show_coot_dialog()
+show_coot_graph()
 '''
 
 
-def write_coot_script(markers, title, output, force=False, precision=2, full_precision=False):
+def write_coot_script(markers, title, output, force=False, precision=2,
+                      full_precision=False, graph=None, graph_title=None,
+                      graph_series=(), graph_selected=0, graph_bands=None):
     """
     Write a Coot (0.9 or 1) Python script.
 
     Running the script inside Coot opens a dialog listing `markers` in the given
-    order; clicking a row recenters the view via `set_rotation_centre`.
+    order; clicking a row recenters the view via `set_rotation_centre`. When
+    `graph` is given, a second window opens with one bar chart per
+    chain: one bar per residue at its residue number, coloured by the band its value falls into,
+    and clickable in the same way as a row of the list. `graph_bands` sets the
+    colours it starts with; the graph window can move the boundaries between
+    them afterwards.
 
     Inputs
     ------
@@ -1123,9 +1843,26 @@ def write_coot_script(markers, title, output, force=False, precision=2, full_pre
     output : path to write the script to (required)
     force : allow overwriting an existing file
     precision, full_precision : control rounding of the displayed value
+    graph : iterable of (label, chain, seqid, values, unit, x, y, z), or None
+        the residues to draw as bars. `values` holds one number per entry of
+        `graph_series`, or None where that residue has none of that kind. A
+        seqid with no residue number in it is left out of the graph, and no
+        graph window opens when nothing is left
+    graph_title : title of the graph window (defaults to `title`)
+    graph_series : what the bars can be drawn from, e.g.
+        ("Max displacement (Å)", "Average displacement (Å)"); the graph
+        window's "Value..." button switches between them
+    graph_selected : which of `graph_series` the window opens on (default: the
+        first)
+    graph_bands : the colour ladder as ((upper bound, colour), ...), lowest
+        band first and the last bound None (defaults to COOT_GRAPH_BANDS)
     """
     if output is None:
         raise ValueError("write_coot_script requires an output path")
+    if graph and not graph_series:
+        raise ValueError("write_coot_script requires graph_series with a graph")
+    if graph_series and not 0 <= graph_selected < len(graph_series):
+        raise ValueError("graph_selected must name one of graph_series")
     if os.path.exists(output) and not force:
         raise FileExistsError(f"Refusing to overwrite existing file: {output} (use --force)")
     lines = []
@@ -1135,6 +1872,27 @@ def write_coot_script(markers, title, output, force=False, precision=2, full_pre
             value_text = value_text + " " + unit
         # %r keeps full-precision coordinates and safely escapes the strings
         lines.append("    (%r, %r, %r, %r, %r)," % (label, value_text, float(x), float(y), float(z)))
-    content = _COOT_TEMPLATE.format(title=title, markers="\n".join(lines))
+    graph_lines = []
+    for label, chain, seqid, values, unit, x, y, z in (graph or []):
+        number = _residue_number(seqid)
+        if number is None:
+            continue
+        numbers = tuple(None if value is None else float(value) for value in values)
+        texts = []
+        for value in values:
+            text = _format_cell(value, precision, full_precision)
+            texts.append(text + " " + unit if unit and value is not None else text)
+        graph_lines.append("    (%r, %r, %r, %r, %r, %r, %r, %r)," % (
+            label, chain, number, numbers, tuple(texts),
+            float(x), float(y), float(z)))
+    band_lines = ["    (%r, %r)," % (upper, colour)
+                  for upper, colour in (graph_bands or COOT_GRAPH_BANDS)]
+    series_lines = ["    %r," % name for name in graph_series]
+    content = _COOT_TEMPLATE.format(title=title, markers="\n".join(lines),
+                                    graph_title=graph_title or title,
+                                    series="\n".join(series_lines),
+                                    selected=int(graph_selected),
+                                    graph="\n".join(graph_lines),
+                                    bands="\n".join(band_lines))
     with open(output, "w") as handle:
         handle.write(content)

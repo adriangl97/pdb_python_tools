@@ -56,7 +56,7 @@ All analysis tools share the same interface:
 - `-f/--format {tsv,csv}` — output format (default `tsv`).
 - `-o/--output PATH` — write to a file instead of stdout; refuses to overwrite an existing file unless `--force` is given.
 - `--precision N` — decimal places for distances or angles (default `2`); `--full-precision` or negative valued prints raw floats.
-- `--coot PATH` — additionally write a [Coot](https://www2.mrc-lmb.cam.ac.uk/personal/pemsley/coot/) script (works in Coot 0.9 and Coot 1) to `PATH`. Open it in Coot (`Calculate → Run Script…`) to get a dialog listing the results in the same order as the table, each row showing the relevant number; clicking a row recenters the view on that residue's CA/C1' (or, for `pdb_python_tools.find_contacts`, on the contact midpoint). Refuses to overwrite `PATH` unless `--force` is given. To skip the terminal entirely, see [Running the tools inside Coot](#running-the-tools-inside-coot) below.
+- `--coot PATH` — additionally write a [Coot](https://www2.mrc-lmb.cam.ac.uk/personal/pemsley/coot/) script (works in Coot 0.9 and Coot 1) to `PATH`. Open it in Coot (`Calculate → Run Script…`) to get a dialog listing the results in the same order as the table, each row showing the relevant number. Clicking a row recenters the view on that residue's CA/C1' (or, for `pdb_python_tools.find_contacts`, on the contact midpoint). For `pdb_python_tools.atom_tracker` a second window opens next to the list with a [bar graph of the displacement](#the-atom_tracker-bar-graph). Refuses to overwrite `PATH` unless `--force` is given. To skip the terminal entirely, see [Running the tools inside Coot](#running-the-tools-inside-coot) below.
 - `--version` — print the installed version and exit.
 
 > **Alternate conformations:** every alternate conformation in a file is read and kept, and the conformations are tracked separately, but the global (e.g. Max distance and CA/C1' distance) are shared for now.
@@ -94,8 +94,9 @@ Each menu entry opens a dialog where:
   written out to a temporary mmCIF just before the run
 - every flag of that tool is a widget, alongside `--precision` and the table format, if you want to save the table
 - **Run** starts the tool and the generated Coot script opens by itself when it
-  finishes, so clicking a row recenters the view. Untick *Open the results in
-  Coot* to only write the files.
+  finishes, so clicking a row recenters the view. For **Atom tracker** the
+  [bar graph](#the-atom_tracker-bar-graph) opens alongside the list. Untick
+  *Open the results in Coot* to only write the files.
 - the table is only written when a path is given under **Save table to**; left
   empty, no table file is created. The status line at the bottom says
   how many rows the run produced and, when it was saved, where it ended up. A
@@ -112,6 +113,14 @@ and Coot 1's own Python does have the tools, that is what the dialog offers.
 copying it, so the extension follows package upgrades, and `--dir` to install
 into some other directory (the settings file always stays in
 `~/.config/pdb_python_tools`).
+
+### The atom_tracker bar graph
+
+`pdb_python_tools.atom_tracker` opens a second window next to the clickable
+list with one bar chart per chain, one bar per reported residue at its residue number. 
+
+Clicking a bar recenters the view on that residue. The value used for the graph and some other options can be adjusted within the dialog.
+
 
 ## Usage examples
 
