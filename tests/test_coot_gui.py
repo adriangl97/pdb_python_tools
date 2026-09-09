@@ -317,6 +317,70 @@ class TestExportModel:
         assert path.endswith("imol_3.cif")
         assert os.path.exists(path)
 
+    def test_the_cif_is_written_from_a_throwaway_copy(self, fake_coot, tmp_path):
+        """
+        Coot's write_cif_file repeats every atom it has written from a molecule
+        before, so the copy, which has never been written, is what gets written.
+        """
+        written, closed, hidden = [], [], []
+        fake_coot("copy_molecule", lambda imol: imol + 100)
+        fake_coot("set_mol_displayed", lambda imol, state: hidden.append((imol, state)))
+        fake_coot("close_molecule", closed.append)
+
+        def write_cif(imol, path):
+            written.append(imol)
+            with open(path, "w") as handle:
+                handle.write("data_test\n")
+        fake_coot("write_cif_file", write_cif)
+        extension.export_model(3, str(tmp_path))
+        assert written == [103]
+        assert closed == [103]
+        assert hidden == [(103, 0)]
+
+    def test_writes_the_molecule_itself_without_copy_molecule(self, fake_coot, tmp_path):
+        """A Coot with no copy_molecule still gets its cif, duplicates and all."""
+        written = []
+
+        def write_cif(imol, path):
+            written.append(imol)
+            with open(path, "w") as handle:
+                handle.write("data_test\n")
+        fake_coot("write_cif_file", write_cif)
+        assert extension.export_model(3, str(tmp_path)).endswith("imol_3.cif")
+        assert written == [3]
+
+    def test_the_copy_is_closed_when_the_cif_write_fails(self, fake_coot, tmp_path):
+        closed = []
+
+        def explode(imol, path):
+            raise RuntimeError("no cif from this Coot")
+        fake_coot("copy_molecule", lambda imol: imol + 100)
+        fake_coot("close_molecule", closed.append)
+        fake_coot("write_cif_file", explode)
+        fake_coot("write_pdb_file",
+                  lambda imol, path: open(path, "w").write("END\n"))
+        assert extension.export_model(0, str(tmp_path)).endswith("imol_0.pdb")
+        assert closed == [100]
+
+    def test_the_pdb_write_needs_no_copy(self, fake_coot, tmp_path):
+        """Only the cif writer repeats itself, so the pdb one is used directly."""
+        copied, written = [], []
+
+        def copy_molecule(imol):
+            copied.append(imol)
+            return imol + 100
+        fake_coot("copy_molecule", copy_molecule)
+        fake_coot("close_molecule", lambda imol: None)
+
+        def write_pdb(imol, path):
+            written.append(imol)
+            with open(path, "w") as handle:
+                handle.write("END\n")
+        fake_coot("write_pdb_file", write_pdb)
+        extension.export_model(2, str(tmp_path))
+        assert copied == []
+        assert written == [2]
+
     def test_falls_back_to_pdb(self, fake_coot, tmp_path):
         def write_nothing(imol, path):
             # Coot versions without a working cif writer leave an empty file

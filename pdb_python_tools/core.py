@@ -184,7 +184,18 @@ def _euclid(a, b):
     return math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
 
 
-def _add_atom(residues, atom, hydrogens):
+def _atom_key(atom):
+    """
+    Everything a record says about an atom apart from its serial number.
+
+    Two records sharing this key describe the same atom in the same place, so
+    the second is a copy of the first rather than another atom.
+    """
+    return (atom.chainid, atom.seqid, atom.restyp, atom.altid, atom.altloc,
+            atom.x, atom.y, atom.z, atom.occ, atom.biso)
+
+
+def _add_atom(residues, atom, hydrogens, seen):
     """
     Append an Atom to the growing list of Residues, starting a new Residue when
     the chain/seqid (including insertion code) changes. Hydrogens are skipped
@@ -192,10 +203,23 @@ def _add_atom(residues, atom, hydrogens):
 
     Every alternate conformation is kept, so a residue modelled in two
     conformations contributes both copies of each affected atom.
+
+    `seen` collects the atoms taken so far, and a record identical to one
+    already there is left out. That keeps a file which lists the same atoms
+    twice from producing every residue twice, as happens with the cif Coot's
+    write_cif_file writes the second time it is asked for one molecule: it
+    repeats everything it has written before. Atoms that merely share a name,
+    such as the conformers of an alternate conformation or two records placing
+    the same name in different spots, differ in the rest of the record and are
+    all kept.
     """
     # Ignore hydrogens by default; include them only when requested
     if _is_hydrogen(atom.element) and not hydrogens:
         return
+    key = _atom_key(atom)
+    if key in seen:
+        return
+    seen.add(key)
     same_residue = bool(residues) and _res_key(residues[-1].atom_list[0]) == _res_key(atom)
     if not same_residue:
         # CA stays None until a CA/C1' atom actually turns up
@@ -223,9 +247,11 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
     Returns
     -------
     List of residues as Residue class with list of Atom classes within each residue.
-    Every alternate conformation present in the file is kept.
+    Every alternate conformation present in the file is kept, and a record
+    identical to one already read is taken as a repeat and left out.
     """
     residues = []
+    seen = set()         # the atoms read so far, to spot repeated records
     with _open_text(file) as fh:
         for line in fh:
             record = line[0:6].strip()
@@ -245,7 +271,7 @@ def get_resi_from_pdb(file, hetatm, hydrogens):
                             z=_safe_float(line[46:54]),
                             occ=_safe_float(line[54:60]), biso=_safe_float(line[60:66]),
                             altloc=alt_id)
-                _add_atom(residues, atom, hydrogens)
+                _add_atom(residues, atom, hydrogens, seen)
     return residues
 
 
@@ -313,7 +339,8 @@ def get_resi_from_cif(file, hetatm, hydrogens):
     Returns
     -------
     List of residues as Residue class with list of Atom classes within each residue.
-    Every alternate conformation present in the file is kept.
+    Every alternate conformation present in the file is kept, and a row
+    identical to one already read is taken as a repeat and left out.
 
     Raises
     ------
@@ -321,6 +348,7 @@ def get_resi_from_cif(file, hetatm, hydrogens):
     column the parser needs.
     """
     residues = []
+    seen = set()         # the atoms read so far, to spot repeated records
     tags = None          # collecting a loop_ header
     columns = None       # column indices, while inside _atom_site data rows
     widest = 0           # highest column index used, to spot truncated rows
@@ -411,7 +439,7 @@ def get_resi_from_cif(file, hetatm, hydrogens):
                         occ=_safe_float(values[c_occ]) if c_occ is not None else 1.0,
                         biso=_safe_float(values[c_biso]) if c_biso is not None else 0.0,
                         altloc=alt_id)
-            _add_atom(residues, atom, hydrogens)
+            _add_atom(residues, atom, hydrogens, seen)
     if not found_atom_site:
         raise ValueError("No _atom_site loop found")
     return residues
