@@ -510,6 +510,71 @@ class TestAltlocs:
         assert len(load_residues(path, False, False)[0].atom_list) == 6
 
 
+class TestRepeatedRecords:
+    """
+    A file that lists the same atoms twice is read as if it listed them once.
+
+    Coot writes such a file: its write_cif_file adds the molecule to the mmCIF
+    data the molecule already carries, so the second cif written from one
+    molecule in a Coot session repeats every atom, the third repeats it twice,
+    and the tools would otherwise report every residue that many times.
+    """
+
+    def rows(self, tmp_path, copies):
+        residue = [
+            cif_atom_row(1, "N", "N", "SER", 1, 0.0, 0.0, 0.0),
+            cif_atom_row(2, "C", "CA", "SER", 1, 1.0, 0.0, 0.0),
+            cif_atom_row(3, "N", "N", "GLY", 2, 2.0, 0.0, 0.0),
+            cif_atom_row(4, "C", "CA", "GLY", 2, 3.0, 0.0, 0.0),
+        ]
+        return write_cif(tmp_path / "repeat.cif", residue * copies)
+
+    def lines(self, tmp_path, copies):
+        residue = [
+            pdb_atom_line(1, "N", "SER", "A", 1, 0.0, 0.0, 0.0),
+            pdb_atom_line(2, "CA", "SER", "A", 1, 1.0, 0.0, 0.0),
+            pdb_atom_line(3, "N", "GLY", "A", 2, 2.0, 0.0, 0.0),
+            pdb_atom_line(4, "CA", "GLY", "A", 2, 3.0, 0.0, 0.0),
+        ]
+        return write_pdb(tmp_path / "repeat.pdb", residue * copies)
+
+    @pytest.mark.parametrize("copies", [1, 2, 3])
+    def test_the_cif_reads_the_same_however_often_it_repeats(self, tmp_path, copies):
+        residues = get_resi_from_cif(self.rows(tmp_path, copies), False, False)
+        assert [(r.seqid, atom_names(r)) for r in residues] == [
+            ("1", ["N", "CA"]), ("2", ["N", "CA"])]
+
+    @pytest.mark.parametrize("copies", [1, 2, 3])
+    def test_the_pdb_reads_the_same_however_often_it_repeats(self, tmp_path, copies):
+        residues = get_resi_from_pdb(self.lines(tmp_path, copies), False, False)
+        assert [(r.seqid, atom_names(r)) for r in residues] == [
+            ("1", ["N", "CA"]), ("2", ["N", "CA"])]
+
+    def test_a_repeat_leaves_no_empty_residue_behind(self, tmp_path):
+        residues = get_resi_from_cif(self.rows(tmp_path, 3), False, False)
+        assert all(r.atom_list for r in residues)
+        assert [r.CA.x for r in residues] == [1.0, 3.0]
+
+    def test_the_same_name_somewhere_else_is_another_atom(self, tmp_path):
+        """
+        Only an identical record is a repeat: two records that place one name in
+        two spots are the broken-file case the parsers have always kept.
+        """
+        path = write_cif(tmp_path / "twoplaces.cif", [
+            cif_atom_row(1, "C", "CB", "SER", 1, 0.0, 0.0, 0.0),
+            cif_atom_row(2, "C", "CB", "SER", 1, 5.0, 0.0, 0.0),
+        ])
+        assert atom_names(get_resi_from_cif(path, False, False)[0]) == ["CB", "CB"]
+
+    def test_repeats_of_a_conformer_go_too(self, tmp_path):
+        path = write_cif(tmp_path / "altrepeat.cif", [
+            cif_atom_row(1, "C", "CB", "SER", 1, 2.0, 0.0, 0.0, altloc="A", occ=0.6),
+            cif_atom_row(2, "C", "CB", "SER", 1, 9.0, 0.0, 0.0, altloc="B", occ=0.4),
+        ] * 2)
+        resi = get_resi_from_cif(path, False, False)[0]
+        assert [(a.altloc, a.x) for a in resi.atom_list] == [("A", 2.0), ("B", 9.0)]
+
+
 class TestGzipInput:
 
     def gzipped(self, path, tmp_path):

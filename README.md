@@ -91,7 +91,6 @@ Each menu entry opens a dialog where:
 
 - the input structures are picked from the models currently open in Coot, and
   the chain list of `find_contacts` follows the selected model. Models are
-  written out to a temporary mmCIF just before the run
 - every flag of that tool is a widget, alongside `--precision` and the table format, if you want to save the table
 - **Run** starts the tool and the generated Coot script opens by itself when it
   finishes, so clicking a row recenters the view. For **Atom tracker** the

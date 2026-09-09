@@ -121,6 +121,43 @@ def chain_ids_of(imol):
     return [chain_id(imol, i) for i in range(n_chains(imol))]
 
 
+def scratch_copy(imol):
+    """
+    A hidden throwaway copy of molecule `imol`, or None when Coot has no
+    copy_molecule (Coot then writes from `imol` itself).
+
+    """
+    copy_molecule = _coot_function("copy_molecule")
+    if copy_molecule is None:
+        return None
+    try:
+        copy = copy_molecule(imol)
+    except Exception:
+        return None
+    if copy is None or copy < 0:
+        return None
+    set_mol_displayed = _coot_function("set_mol_displayed")
+    if set_mol_displayed is not None:
+        try:
+            set_mol_displayed(copy, 0)
+        except Exception:
+            pass
+    return copy
+
+
+def close_scratch_copy(copy):
+    """Close a molecule made by scratch_copy(); a None copy is nothing to do."""
+    if copy is None:
+        return
+    close_molecule = _coot_function("close_molecule")
+    if close_molecule is None:
+        return
+    try:
+        close_molecule(copy)
+    except Exception:
+        pass
+
+
 def export_model(imol, directory):
     """
     Write the current coordinates of molecule `imol` into `directory` and
@@ -133,10 +170,14 @@ def export_model(imol, directory):
         if write is None:
             continue
         path = os.path.join(directory, file_name)
+        # Only the cif writer repeats what it has written before
+        copy = scratch_copy(imol) if function_name == "write_cif_file" else None
         try:
-            write(imol, path)
+            write(imol if copy is None else copy, path)
         except Exception:
             continue
+        finally:
+            close_scratch_copy(copy)
         if os.path.exists(path) and os.path.getsize(path) > 0:
             return path
     raise ValueError("Coot could not write molecule %d to a file" % imol)
