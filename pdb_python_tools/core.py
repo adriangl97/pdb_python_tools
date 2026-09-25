@@ -905,6 +905,22 @@ def _format_cell(value, precision, full_precision):
         return format(value, f".{precision}f")
     return str(value)
 
+
+def check_outputs(paths, force=False):
+    """
+    Refuse to go on when any of `paths` already exists, unless `force` is set.
+
+    The tools call this for every file they are about to write before writing
+    any of them, so a refusal never leaves one written and the next missing.
+    A path of None (nothing to write) is skipped.
+    """
+    if force:
+        return
+    for path in paths:
+        if path is not None and os.path.exists(path):
+            raise FileExistsError(f"Refusing to overwrite existing file: {path} (use --force)")
+
+
 def write_table(header, rows, fmt="tsv", output=None, force=False,
                 precision=2, full_precision=False, comments=()):
     """
@@ -928,8 +944,7 @@ def write_table(header, rows, fmt="tsv", output=None, force=False,
     if fmt not in ("tsv", "csv"):
         raise ValueError(f"Unsupported output format: {fmt}")
     delimiter = "\t" if fmt == "tsv" else ","
-    if output is not None and os.path.exists(output) and not force:
-        raise FileExistsError(f"Refusing to overwrite existing file: {output} (use --force)")
+    check_outputs([output], force)
     handle = open(output, "w", newline="") if output is not None else sys.stdout
     try:
         for comment in comments:
@@ -1891,8 +1906,7 @@ def write_coot_script(markers, title, output, force=False, precision=2,
         raise ValueError("write_coot_script requires graph_series with a graph")
     if graph_series and not 0 <= graph_selected < len(graph_series):
         raise ValueError("graph_selected must name one of graph_series")
-    if os.path.exists(output) and not force:
-        raise FileExistsError(f"Refusing to overwrite existing file: {output} (use --force)")
+    check_outputs([output], force)
     lines = []
     for label, value, unit, x, y, z in markers:
         value_text = _format_cell(value, precision, full_precision)
@@ -1922,5 +1936,7 @@ def write_coot_script(markers, title, output, force=False, precision=2,
                                     selected=int(graph_selected),
                                     graph="\n".join(graph_lines),
                                     bands="\n".join(band_lines))
-    with open(output, "w") as handle:
+    # UTF-8 whatever the locale, as the script's coding line says: its labels
+    # carry Å and °, which Coot cannot read back in any other encoding
+    with open(output, "w", encoding="utf-8") as handle:
         handle.write(content)

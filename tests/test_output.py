@@ -3,10 +3,13 @@ Tests for the shared output layer: cell formatting, the TSV/CSV writer, the
 generated Coot script and the common argparse flags.
 """
 import argparse
+import os
 import sys
 import types
 
 import pytest
+
+from conftest import REPO_ROOT
 
 from pdb_python_tools.core import (COOT_GRAPH_BANDS, _format_cell, add_output_args,
                                    write_coot_script, write_table)
@@ -204,6 +207,29 @@ class TestWriteCootScript:
         target.write_text("replace me\n")
         write_coot_script(MARKERS, "t", str(target), force=True)
         assert "A 10 SER" in target.read_text()
+
+    def test_script_is_utf8_whatever_the_locale(self, tmp_path):
+        """
+        The script declares UTF-8 and carries Å, so it has to be written in
+        UTF-8 even where the locale asks for something else.
+        """
+        import subprocess
+        target = tmp_path / "coot.py"
+        code = ("import locale, sys\n"
+                "from pdb_python_tools.core import write_coot_script\n"
+                "print(locale.getpreferredencoding(False))\n"
+                "write_coot_script([('A 1 SER', 1.5, 'Å', 0.0, 0.0, 0.0)], 't', "
+                "sys.argv[1])\n")
+        environment = dict(os.environ, LC_ALL="en_US.ISO8859-1", LANG="en_US.ISO8859-1",
+                           PYTHONUTF8="0", PYTHONPATH=REPO_ROOT)
+        result = subprocess.run([sys.executable, "-c", code, str(target)],
+                                env=environment, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        if "utf" in result.stdout.lower().replace("-", ""):
+            pytest.skip("no Latin-1 locale on this system to write under")
+        content = target.read_bytes().decode("utf-8")
+        assert "1.50 Å" in content
+        compile(content, str(target), "exec")
 
     def test_output_path_is_required(self):
         with pytest.raises(ValueError, match="requires an output path"):

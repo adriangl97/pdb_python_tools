@@ -318,6 +318,55 @@ class TestErrorMessages:
         assert "error:" in result.stderr
 
 
+@needs_scipy
+class TestOutputFiles:
+    """
+    With both -o and --coot, a refusal to overwrite one of them must come
+    before either is written, or a rerun would trip over the half left behind.
+    """
+
+    ARGS = {"atom_tracker": ["A", "B"],
+            "CA_difference": ["A", "B"],
+            "find_contacts": ["A", "-c", "A", "-d", "20"],
+            "nucleotide_conformation": ["A"]}
+
+    def run(self, tool, pair, *extra):
+        inputs = {"A": pair[0], "B": pair[1]}
+        return run_tool(tool, *[inputs.get(a, a) for a in self.ARGS[tool]], *extra)
+
+    @pytest.mark.parametrize("tool", sorted(ARGS))
+    def test_an_existing_coot_script_stops_the_table_too(self, tool, pair, tmp_path):
+        table = tmp_path / "out.tsv"
+        script = tmp_path / "coot.py"
+        script.write_text("keep me\n")
+        result = self.run(tool, pair, "-o", table, "--coot", script)
+        assert result.returncode == 1
+        assert "--force" in result.stderr
+        assert not table.exists()
+        assert script.read_text() == "keep me\n"
+
+    @pytest.mark.parametrize("tool", sorted(ARGS))
+    def test_an_existing_table_stops_the_coot_script_too(self, tool, pair, tmp_path):
+        table = tmp_path / "out.tsv"
+        script = tmp_path / "coot.py"
+        table.write_text("keep me\n")
+        result = self.run(tool, pair, "-o", table, "--coot", script)
+        assert result.returncode == 1
+        assert not script.exists()
+        assert table.read_text() == "keep me\n"
+
+    @pytest.mark.parametrize("tool", sorted(ARGS))
+    def test_force_writes_both(self, tool, pair, tmp_path):
+        table = tmp_path / "out.tsv"
+        script = tmp_path / "coot.py"
+        table.write_text("replace me\n")
+        script.write_text("replace me\n")
+        result = self.run(tool, pair, "-o", table, "--coot", script, "--force")
+        assert result.returncode == 0, result.stderr
+        assert table.read_text() != "replace me\n"
+        compile(script.read_text(encoding="utf-8"), str(script), "exec")
+
+
 class TestGzipCli:
     def test_gzipped_input_matches_plain(self, rna, tmp_path):
         packed = tmp_path / "rna.pdb.gz"

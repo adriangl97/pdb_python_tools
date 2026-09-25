@@ -27,6 +27,7 @@ from .core import classify_nucleotide_conformation
 from .core import add_output_args
 from .core import add_version_arg
 from .core import write_table
+from .core import check_outputs
 from .core import write_coot_script
 from .core import is_pyrimidine
 from .core import count_nucleotide_conformations
@@ -119,6 +120,7 @@ def main():
                            args.precision, args.full_precision)
 
     try:
+        check_outputs([args.output, args.coot], args.force)
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision,
                     comments=stats)

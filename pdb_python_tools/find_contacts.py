@@ -11,6 +11,7 @@ from .core import find_contacts_kdtree
 from .core import add_output_args
 from .core import add_version_arg
 from .core import write_table
+from .core import check_outputs
 from .core import write_coot_script
 import argparse
 import sys
@@ -73,6 +74,7 @@ def main():
                    for atom1, atom2, dist in atom_pairs] if args.coot else []
 
     try:
+        check_outputs([args.output, args.coot], args.force)
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)
         if args.coot:
