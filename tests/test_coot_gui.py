@@ -12,8 +12,11 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import types
 
 import pytest
@@ -421,6 +424,31 @@ class TestRunCootScript:
         # The script's own names must not leak into Coot's namespace
         assert not hasattr(__main__, "RAN")
 
+    def test_fallback_reads_the_script_as_utf8(self, tmp_path):
+        """
+        Generated scripts are UTF-8 (their labels carry Å and °), and that is
+        how they must be read back whatever the locale says.
+        """
+        script = tmp_path / "coot.py"
+        script.write_bytes(u"# -*- coding: utf-8 -*-\nrecord(u'4.00 \u00c5')\n"
+                           .encode("utf-8"))
+        code = ("import __main__, locale, sys\n"
+                "from pdb_python_tools import coot_extension\n"
+                "seen = []\n"
+                "__main__.record = seen.append\n"
+                "coot_extension.run_coot_script(sys.argv[1])\n"
+                "print(locale.getpreferredencoding(False))\n"
+                "print(seen == [u'4.00 \\u00c5'])\n")
+        environment = dict(os.environ, LC_ALL="en_US.ISO8859-1", LANG="en_US.ISO8859-1",
+                           PYTHONUTF8="0", PYTHONPATH=REPO_ROOT)
+        result = subprocess.run([sys.executable, "-c", code, str(script)],
+                                env=environment, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        encoding, matched = result.stdout.split()
+        if "utf" in encoding.lower().replace("-", ""):
+            pytest.skip("no Latin-1 locale on this system to read under")
+        assert matched == "True"
+
 
 class TestErrorText:
     def test_short_message_is_kept_whole(self):
@@ -804,3 +832,237 @@ class TestGeneratedCommandLine:
         namespace = {"__name__": "not_main"}
         exec(compile(content, str(script), "exec"), namespace)
         assert namespace["MARKERS"]
+
+
+class TestTablePath:
+    """The table the dialog names is written where the user meant it to go."""
+
+    def test_blank_means_no_table(self):
+        assert extension.table_path("   ") == ""
+
+    def test_a_relative_name_is_taken_from_coots_directory(self, tmp_path,
+                                                           monkeypatch):
+        # The tool runs inside its temporary directory, so the name must not
+        # be left relative for it to resolve
+        monkeypatch.chdir(tmp_path)
+        assert extension.table_path(" out.tsv ") == str(tmp_path / "out.tsv")
+
+    def test_home_is_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert extension.table_path("~/out.tsv") == str(tmp_path / "out.tsv")
+
+
+class _FakeWidget(object):
+    """Just enough of an entry, combo, check box or button for ToolDialog."""
+
+    def __init__(self, text="", active=0):
+        self.text = text
+        self.active = active
+        self.sensitive = True
+
+    def get_text(self):
+        return self.text
+
+    def set_text(self, text):
+        self.text = text
+
+    def get_active(self):
+        return self.active
+
+    def set_sensitive(self, sensitive):
+        self.sensitive = sensitive
+
+
+class _FakeToolkit(object):
+    """The toolkit calls a run makes, recorded instead of shown."""
+
+    def __init__(self):
+        self.errors = []
+        self.confirmations = []
+
+    def combo_text(self, combo):
+        return combo.text
+
+    def error(self, parent, text):
+        self.errors.append(text)
+
+    def confirm(self, parent, text, on_yes):
+        self.confirmations.append(on_yes)
+
+    def timeout_add(self, milliseconds, function):
+        return None
+
+
+@needs_scipy
+class TestRunLifecycle:
+    """
+    A run from the dialog, minus GTK: the exported models, the generated
+    script and the tool's output all live in a temporary directory, which has
+    to be gone once nothing needs it any more.
+    """
+
+    @pytest.fixture(autouse=True)
+    def isolated(self, tmp_path, monkeypatch, pair):
+        # The settings file, the temporary directories and the exported models
+        # all stay under tmp_path
+        monkeypatch.setattr(extension, "CONFIG_PATH",
+                            str(tmp_path / "prefs" / extension.CONFIG_NAME))
+        self.temp_root = tmp_path / "temp"
+        self.temp_root.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(self.temp_root))
+        self.pair = pair
+        monkeypatch.setattr(extension, "export_model",
+                            lambda imol, directory: shutil.copy(pair[imol], directory))
+        # The package is imported from the clone, not from site-packages
+        environment = extension.subprocess_environment()
+        environment["PYTHONPATH"] = str(REPO_ROOT)
+        monkeypatch.setattr(extension, "subprocess_environment",
+                            lambda: environment)
+        self.opened = []
+
+        def run_coot_script(path):
+            self.opened.append((path, os.path.exists(path)))
+        monkeypatch.setattr(extension, "run_coot_script", run_coot_script)
+        self.tk = _FakeToolkit()
+        monkeypatch.setattr(extension, "_toolkit", lambda: self.tk)
+
+    def dialog(self, output="", python=None, open_results=True):
+        """A CA_difference dialog as if it had been filled in and shown."""
+        dialog = extension.ToolDialog(tool_by_module("CA_difference"))
+        dialog.window = None
+        dialog.models = [(0, "first"), (1, "second")]
+        dialog.model_combos = [_FakeWidget(active=0), _FakeWidget(active=1)]
+        dialog.option_widgets = [(option, _FakeWidget(active=False))
+                                 for option in dialog.tool.options]
+        dialog.python_entry = _FakeWidget(python or sys.executable)
+        dialog.precision_entry = _FakeWidget("2")
+        dialog.format_combo = _FakeWidget("tsv")
+        dialog.output_entry = _FakeWidget(output)
+        dialog.open_check = _FakeWidget(active=open_results)
+        dialog.run_button = _FakeWidget()
+        dialog.status_label = _FakeWidget()
+        return dialog
+
+    def finish(self, dialog):
+        """Poll the way the GTK main loop would, until the run is over."""
+        deadline = time.time() + 60
+        while dialog._poll():
+            assert time.time() < deadline, "the tool never finished"
+            time.sleep(0.05)
+
+    def leftovers(self):
+        return os.listdir(str(self.temp_root))
+
+    def test_a_finished_run_leaves_no_temporary_directory(self):
+        dialog = self.dialog()
+        dialog._on_run()
+        self.finish(dialog)
+        assert not self.tk.errors
+        assert "2 row(s)" in dialog.status_label.text
+        assert self.leftovers() == []
+
+    def test_the_script_is_still_there_while_coot_runs_it(self):
+        dialog = self.dialog()
+        dialog._on_run()
+        self.finish(dialog)
+        assert [exists for _path, exists in self.opened] == [True]
+
+    def test_not_opening_the_results_leaves_nothing_behind(self):
+        dialog = self.dialog(open_results=False)
+        dialog._on_run()
+        self.finish(dialog)
+        assert self.opened == []
+        assert self.leftovers() == []
+
+    def test_a_script_coot_cannot_open_is_kept(self, monkeypatch):
+        def refuse(path):
+            raise RuntimeError("no GUI")
+        monkeypatch.setattr(extension, "run_coot_script", refuse)
+        dialog = self.dialog()
+        dialog._on_run()
+        self.finish(dialog)
+        # The error sends the user to the script, so it has to stay
+        assert len(self.tk.errors) == 1
+        script = re.search(r"written to (\S+) but", self.tk.errors[0]).group(1)
+        assert os.path.isfile(script)
+        # but the exported models are not needed by anyone
+        assert not [name for name in os.listdir(os.path.dirname(script))
+                    if name.startswith("imol_")]
+
+    def test_a_failed_run_leaves_no_temporary_directory(self, monkeypatch):
+        # A file the tool cannot read makes it exit with an error
+        def export_unreadable(imol, directory):
+            path = os.path.join(directory, "imol_%d.xyz" % imol)
+            open(path, "w").close()
+            return path
+        monkeypatch.setattr(extension, "export_model", export_unreadable)
+        dialog = self.dialog()
+        dialog._on_run()
+        self.finish(dialog)
+        assert "exit status 1" in self.tk.errors[0]
+        assert self.leftovers() == []
+
+    def test_a_failed_export_leaves_no_temporary_directory(self, monkeypatch):
+        def cannot_write(imol, directory):
+            if imol == 1:
+                raise ValueError("Coot could not write molecule 1 to a file")
+            return shutil.copy(self.pair[imol], directory)
+        monkeypatch.setattr(extension, "export_model", cannot_write)
+        dialog = self.dialog()
+        dialog._on_run()
+        assert "could not write molecule 1" in self.tk.errors[0]
+        assert dialog.process is None
+        assert self.leftovers() == []
+
+    def test_an_interpreter_that_does_not_start_leaves_nothing_behind(self, tmp_path):
+        dialog = self.dialog(python=str(tmp_path / "no_such_python"))
+        dialog._on_run()
+        assert self.tk.errors[0].startswith("Could not run")
+        assert dialog.process is None
+        assert self.leftovers() == []
+
+    def test_closing_the_dialog_mid_run_still_tidies_up(self):
+        dialog = self.dialog()
+        dialog._on_run()
+        dialog._on_destroy()
+        self.finish(dialog)
+        assert self.opened == []
+        assert not self.tk.errors
+        assert self.leftovers() == []
+
+    def test_a_relative_table_name_is_taken_from_coots_directory(
+            self, tmp_path, monkeypatch):
+        coot_dir = tmp_path / "coot_dir"
+        coot_dir.mkdir()
+        monkeypatch.chdir(coot_dir)
+        dialog = self.dialog(output="out.tsv")
+        dialog._on_run()
+        self.finish(dialog)
+        assert (coot_dir / "out.tsv").read_text().startswith("Chain1\t")
+        assert str(coot_dir / "out.tsv") in dialog.status_label.text
+
+    def test_an_existing_relative_table_is_confirmed_first(self, tmp_path,
+                                                           monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out.tsv").write_text("keep me\n")
+        dialog = self.dialog(output="out.tsv")
+        dialog._on_run()
+        assert len(self.tk.confirmations) == 1
+        assert dialog.process is None
+
+    def test_a_second_confirmed_run_is_ignored_while_one_is_going(self, tmp_path,
+                                                                  monkeypatch):
+        # In Coot 1 the overwrite question is answered in a callback, so two
+        # can be pending at once; only the first may start a run
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out.tsv").write_text("replace me\n")
+        dialog = self.dialog(output="out.tsv")
+        dialog._on_run()
+        dialog._on_run()
+        first, second = self.tk.confirmations
+        first()
+        running = dialog.process
+        second()
+        assert dialog.process is running
+        self.finish(dialog)
+        assert self.leftovers() == []

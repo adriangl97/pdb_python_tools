@@ -12,6 +12,7 @@ from .core import compare_pdb_resi_xyz
 from .core import add_output_args
 from .core import add_version_arg
 from .core import write_table
+from .core import check_outputs
 from .core import write_coot_script
 import argparse
 import sys
@@ -80,6 +81,7 @@ def main():
                               "Å", center.x, center.y, center.z))
 
     try:
+        check_outputs([args.output, args.coot], args.force)
         write_table(header, rows, fmt=args.format, output=args.output, force=args.force,
                     precision=args.precision, full_precision=args.full_precision)
         if args.coot:

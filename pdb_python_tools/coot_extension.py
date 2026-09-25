@@ -27,6 +27,7 @@ from __future__ import print_function
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -198,7 +199,9 @@ def run_coot_script(path):
     import __main__
     namespace = dict(__main__.__dict__)
     namespace["__file__"] = path
-    handle = open(path)
+    # Read as bytes, so that compile() decodes the file by its own coding line
+    # (UTF-8) rather than by the locale, in Python 2 and 3 alike
+    handle = open(path, "rb")
     try:
         source = handle.read()
     finally:
@@ -423,6 +426,25 @@ def build_command(tool, python, inputs, option_args, precision, fmt, table, scri
         argv.extend(["-o", table])
     argv.extend(["--coot", script, "--force"])
     return argv
+
+
+def table_path(text):
+    """
+    Where the table named in the dialog goes, as an absolute path, or "" for
+    no table file.
+
+    The tool runs inside its temporary directory, so a relative name would
+    otherwise land there, and no shell is involved to expand a leading "~".
+    """
+    text = text.strip()
+    if not text:
+        return ""
+    return os.path.abspath(os.path.expanduser(text))
+
+
+def remove_work_dir(path):
+    """Delete a run's temporary directory."""
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def subprocess_environment():
@@ -883,6 +905,8 @@ class ToolDialog(object):
         self.chain_combos = []
         self.process = None
         self.run_state = None
+        # Set once the window is gone; a run still going is then only tidied up
+        self.closed = False
 
     # -- construction ------------------------------------------------------
 
@@ -1064,7 +1088,7 @@ class ToolDialog(object):
         return {"python": python, "precision": precision, "imols": imols,
                 "option_args": self._option_args(),
                 "fmt": self.tk.combo_text(self.format_combo) or "tsv",
-                "output": self.output_entry.get_text().strip()}
+                "output": table_path(self.output_entry.get_text())}
 
     def _prepare(self, settings):
         """
@@ -1073,14 +1097,18 @@ class ToolDialog(object):
         """
         work_dir = tempfile.mkdtemp(prefix="pdb_python_tools_")
         # No name given means no table file at all: the tool prints it instead
-        table_path = settings["output"] or None
+        table = settings["output"] or None
         script_path = os.path.join(work_dir, "%s_coot.py" % self.tool.module)
-        inputs = [export_model(imol, work_dir) for imol in settings["imols"]]
+        try:
+            inputs = [export_model(imol, work_dir) for imol in settings["imols"]]
+        except Exception:
+            remove_work_dir(work_dir)
+            raise
         argv = build_command(self.tool, settings["python"], inputs,
                              settings["option_args"], settings["precision"],
-                             settings["fmt"], table_path, script_path)
+                             settings["fmt"], table, script_path)
         return {"argv": argv, "work_dir": work_dir, "inputs": inputs,
-                "table": table_path, "script": script_path,
+                "table": table, "script": script_path,
                 "python": settings["python"]}
 
     # -- running -----------------------------------------------------------
@@ -1108,20 +1136,28 @@ class ToolDialog(object):
 
     def _start(self, settings):
         """Export the models and launch the tool."""
+        # The overwrite question is answered in a callback in Coot 1, by which
+        # time the dialog may be gone or another Run already under way
+        if self.closed or self.process is not None:
+            return
         try:
             state = self._prepare(settings)
         except Exception as exc:
             self._error("Could not start the run:\n\n%s" % exc)
             return
 
-        state["stdout"] = open(os.path.join(state["work_dir"], "stdout.txt"), "w+")
-        state["stderr"] = open(os.path.join(state["work_dir"], "stderr.txt"), "w+")
         environment = subprocess_environment()
         try:
+            state["stdout"] = open(os.path.join(state["work_dir"], "stdout.txt"), "w+")
+            state["stderr"] = open(os.path.join(state["work_dir"], "stderr.txt"), "w+")
             state["process"] = subprocess.Popen(
                 state["argv"], stdout=state["stdout"], stderr=state["stderr"],
                 cwd=state["work_dir"], env=environment)
-        except OSError as exc:
+        except (IOError, OSError) as exc:
+            for name in ("stdout", "stderr"):
+                if name in state:
+                    self._read_back(state[name])
+            remove_work_dir(state["work_dir"])
             self._error("Could not run %s:\n\n%s\n\nSet the Python 3 interpreter "
                         "that has pdb_python_tools installed." % (state["python"], exc))
             return
@@ -1146,7 +1182,6 @@ class ToolDialog(object):
         returncode = self.process.returncode
         self.process = None
         self.run_state = None
-        self.run_button.set_sensitive(True)
         errors = self._read_back(state["stderr"])
         output = self._read_back(state["stdout"])
         # The exported copies are only needed while the tool reads them
@@ -1155,8 +1190,14 @@ class ToolDialog(object):
                 os.remove(path)
             except OSError:
                 pass
+        if self.closed:
+            # The dialog was closed while the tool ran: nothing left to show
+            remove_work_dir(state["work_dir"])
+            return
+        self.run_button.set_sensitive(True)
 
         if returncode != 0:
+            remove_work_dir(state["work_dir"])
             # The tools report a bad file or a bad argument on stderr
             message = errors.strip() or output.strip() or "No error message."
             self._error("%s failed (exit status %d).\n\n%s"
@@ -1181,8 +1222,13 @@ class ToolDialog(object):
             try:
                 run_coot_script(state["script"])
             except Exception as exc:
+                # The script is kept, since the message sends the user to it
                 self._error("The results were written to %s but Coot could not "
                             "open them:\n\n%s" % (state["script"], exc))
+                return
+        # Coot has run the script by now (or was not asked to), and the
+        # directory holds nothing else anyone needs
+        remove_work_dir(state["work_dir"])
 
     def _read_back(self, handle):
         """Read a subprocess output file back from the start and close it."""
@@ -1205,13 +1251,18 @@ class ToolDialog(object):
         self.tk.save_as(self.window, name, self.output_entry.set_text)
 
     def _on_destroy(self):
-        """Stop a run that is still going when the dialog is closed."""
+        """
+        Stop a run that is still going when the dialog is closed.
+
+        The process is left for _poll, which tidies its temporary directory
+        away once it has actually exited.
+        """
+        self.closed = True
         if self.process is not None and self.process.poll() is None:
             try:
                 self.process.terminate()
             except OSError:
                 pass
-        self.process = None
 
     def _set_status(self, text):
         self.status_label.set_text(text)
